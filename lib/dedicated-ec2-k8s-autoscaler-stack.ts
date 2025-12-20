@@ -1,13 +1,23 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import { Construct } from 'constructs';
 
 export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
+  public readonly kmsKey: kms.Key;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // Pre-req: KMS CMK with rotation enabled
+    this.kmsKey = new kms.Key(this, 'K8sAutoscalerKey', {
+      description: 'KMS key for K8s autoscaler encryption',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
+    // 1. Create the VPC
     this.vpc = new ec2.Vpc(this, 'DedicatedVpc', {
       ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
       defaultInstanceTenancy: ec2.DefaultInstanceTenancy.DEDICATED,

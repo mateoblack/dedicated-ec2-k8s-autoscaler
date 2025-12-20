@@ -37,3 +37,18 @@ test('VPC with dedicated tenancy and CIDR configuration', () => {
     CidrBlock: '10.1.1.0/24'
   });
 });
+
+test('KMS CMK exists with rotation enabled', () => {
+  const app = new cdk.App();
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack');
+  const template = Template.fromStack(stack);
+
+  // Test KMS key exists
+  template.resourceCountIs('AWS::KMS::Key', 1);
+
+  // Test KMS key has rotation enabled
+  template.hasResourceProperties('AWS::KMS::Key', {
+    EnableKeyRotation: true,
+    Description: 'KMS key for K8s autoscaler encryption'
+  });
+});
