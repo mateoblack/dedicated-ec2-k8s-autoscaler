@@ -39,6 +39,7 @@ export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: DedicatedEc2K8sAutoscalerProps) {
     super(scope, id);
 
+    // IMPORTANT self-healing parameters. 
     this.workerJoinParameterName = `/${props.clusterName}/kubeadm/worker-join`;
     this.controlPlaneJoinParameter = `/${props.clusterName}/kubeadm/control-plane-join`;
     this.oidcIssuerParameterName = `/${props.clusterName}/kubeadm/oidc-issuer`;
