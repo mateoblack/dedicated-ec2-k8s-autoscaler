@@ -3,21 +3,60 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import { Construct } from 'constructs';
 
+export interface DedicatedEc2K8sAutoscalerProps {
+  /** 
+   *  Name of the K8s cluser (used for tagging, naming resources)
+   *  Must be DNS-compatible (lowercase, numbers, hypens only)
+   *  @example "production-cluster" or "dev-k8s"
+   */
+
+  readonly clusterName: string;
+
+  // Optional: Allow a user to provide their own KMS key
+  /** *
+   *  KMS key for encrypting all resources
+   *  If not provided, a new kms will be created automatically
+   *  @default - A new KMS key is created with enabled 
+   * 
+  */
+
+  readonly kmsKey?: kms.IKey;
+
+}
+
 export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
-  public readonly kmsKey: kms.Key;
+  public readonly kmsKey: kms.IKey;
   public readonly ssmSecurityGroup: ec2.SecurityGroup;
+  public readonly bootstrapLockTable: cdk.aws_dynamodb.Table;
+  public readonly etcdMemberTable: cdk.aws_dynamodb.Table;
 
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
+  constructor(scope: Construct, id: string, props: DedicatedEc2K8sAutoscalerProps) {
+    super(scope, id);
 
-    // Pre-req: KMS CMK with rotation enabled
-    this.kmsKey = new kms.Key(this, 'K8sAutoscalerKey', {
-      description: 'KMS key for K8s autoscaler encryption',
+    // Pre-req section
+
+    // Validate Cluster Name 
+    if (!props.clusterName || props.clusterName.length < 3) {
+      throw new Error("clusterName must be at least 3 charaters")
+    }
+
+    // Validate DNS-compatiable Clustername
+    if (!/^[a-z0-9-]+$/.test(props.clusterName)) {
+      throw new Error(
+        "clustername must only lowercase letters numbers and hyphens"
+      );
+    }
+
+    // Create or use provided kms key
+    this.kmsKey = props.kmsKey ?? new kms.Key(this, "ClusterCMK", {
       enableKeyRotation: true,
-      removalPolicy: cdk.RemovalPolicy.DESTROY
+      description: `CMK KMS for DedicatedEc2K8s: ${props.clusterName}`,
+      alias: `alias/${props.clusterName}`,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, //IMPORTANT: Don't delete key on stack deletion
     });
 
+    // VPC Infra Section
     // 1. Create the VPC
     this.vpc = new ec2.Vpc(this, 'DedicatedVpc', {
       ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
@@ -95,5 +134,60 @@ export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
         tags: [{ key: 'Name', value: `PodCommunication-${index + 1}` }]
       }).addDependency(secondaryCidr);
     });
+
+    // Dynamodb Infra Section 
+
+    // BootStrapLockTable 
+    // needed for electing a k8 leader
+    this.bootstrapLockTable = new cdk.aws_dynamodb.Table(this, "BootstrapLockTable",{
+      tableName: `${props.clusterName}-bootstrap-lock`,
+      partitionKey : {
+        name: "LockName",
+        type: cdk.aws_dynamodb.AttributeType.STRING
+      },
+      billingMode: cdk.aws_dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: cdk.aws_dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: this.kmsKey,
+      pointInTimeRecovery: true, 
+      timeToLiveAttribute: "ExpiresAt",
+      removalPolicy: cdk.RemovalPolicy.DESTROY // IMPORTANT In prod, consider RETAIN 
+    });
+
+    this.etcdMemberTable = new cdk.aws_dynamodb.Table(this, "EtcdMemberTable", {
+      tableName: `${props.clusterName}-etcd-memebers`,
+      partitionKey: {
+        name: "Cluster Id",
+        type: cdk.aws_dynamodb.AttributeType.STRING
+      },
+      sortKey: {
+        name: "MemberId",
+        type: cdk.aws_dynamodb.AttributeType.STRING
+      },
+      billingMode: cdk.aws_dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: cdk.aws_dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: this.kmsKey,
+      pointInTimeRecovery: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // IMPORTANT In prod, consider RETAIN
+    });
+
+    this.etcdMemberTable.addGlobalSecondaryIndex({
+      indexName: "InstanceIdIndex",
+      partitionKey: {
+        name: "InstanceId",
+        type: cdk.aws_dynamodb.AttributeType.STRING
+      },
+      projectionType: cdk.aws_dynamodb.ProjectionType.ALL,
+    });
+
+    this.etcdMemberTable.addGlobalSecondaryIndex({
+      indexName: "IpAddressIndex",
+      partitionKey: {
+        name: "PrivateIp",
+        type: cdk.aws_dynamodb.AttributeType.STRING,
+      },
+      projectionType: cdk.aws_dynamodb.ProjectionType.ALL,
+    });
+
+
   }
 }

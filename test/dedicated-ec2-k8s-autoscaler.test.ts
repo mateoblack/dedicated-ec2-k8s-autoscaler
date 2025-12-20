@@ -4,7 +4,9 @@ import * as DedicatedEc2K8sAutoscaler from '../lib/dedicated-ec2-k8s-autoscaler-
 
 test('VPC with dedicated tenancy and CIDR configuration', () => {
   const app = new cdk.App();
-  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack');
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack', {
+    clusterName: 'test-cluster'
+  });
   const template = Template.fromStack(stack);
 
   // Test VPC with primary CIDR and dedicated tenancy
@@ -40,7 +42,9 @@ test('VPC with dedicated tenancy and CIDR configuration', () => {
 
 test('KMS CMK exists with rotation enabled', () => {
   const app = new cdk.App();
-  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack');
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack', {
+    clusterName: 'test-cluster'
+  });
   const template = Template.fromStack(stack);
 
   // Test KMS key exists
@@ -49,13 +53,15 @@ test('KMS CMK exists with rotation enabled', () => {
   // Test KMS key has rotation enabled
   template.hasResourceProperties('AWS::KMS::Key', {
     EnableKeyRotation: true,
-    Description: 'KMS key for K8s autoscaler encryption'
+    Description: 'CMK KMS for DedicatedEc2K8s: test-cluster'
   });
 });
 
 test('SSM VPC endpoints and security groups configured', () => {
   const app = new cdk.App();
-  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack');
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack', {
+    clusterName: 'test-cluster'
+  });
   const template = Template.fromStack(stack);
 
   // Test VPC endpoints exist (4 endpoints: SSM, SSM Messages, EC2 Messages, KMS)
@@ -81,5 +87,88 @@ test('SSM VPC endpoints and security groups configured', () => {
   template.hasResourceProperties('AWS::EC2::VPCEndpoint', {
     VpcEndpointType: 'Interface',
     SecurityGroupIds: Match.anyValue()
+  });
+});
+
+test('DynamoDB tables configured correctly', () => {
+  const app = new cdk.App();
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack', {
+    clusterName: 'test-cluster'
+  });
+  const template = Template.fromStack(stack);
+
+  // Test bootstrap lock table
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    TableName: 'test-cluster-bootstrap-lock',
+    AttributeDefinitions: [
+      {
+        AttributeName: 'LockName',
+        AttributeType: 'S'
+      }
+    ],
+    KeySchema: [
+      {
+        AttributeName: 'LockName',
+        KeyType: 'HASH'
+      }
+    ],
+    BillingMode: 'PAY_PER_REQUEST',
+    PointInTimeRecoverySpecification: {
+      PointInTimeRecoveryEnabled: true
+    },
+    TimeToLiveSpecification: {
+      AttributeName: 'ExpiresAt',
+      Enabled: true
+    }
+  });
+
+  // Test etcd member table
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    TableName: 'test-cluster-etcd-memebers',
+    AttributeDefinitions: Match.arrayWith([
+      {
+        AttributeName: 'Cluster Id',
+        AttributeType: 'S'
+      },
+      {
+        AttributeName: 'MemberId',
+        AttributeType: 'S'
+      }
+    ]),
+    KeySchema: [
+      {
+        AttributeName: 'Cluster Id',
+        KeyType: 'HASH'
+      },
+      {
+        AttributeName: 'MemberId',
+        KeyType: 'RANGE'
+      }
+    ],
+    BillingMode: 'PAY_PER_REQUEST'
+  });
+
+  // Test global secondary indexes
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    GlobalSecondaryIndexes: Match.arrayWith([
+      Match.objectLike({
+        IndexName: 'InstanceIdIndex',
+        KeySchema: [
+          {
+            AttributeName: 'InstanceId',
+            KeyType: 'HASH'
+          }
+        ]
+      }),
+      Match.objectLike({
+        IndexName: 'IpAddressIndex',
+        KeySchema: [
+          {
+            AttributeName: 'PrivateIp',
+            KeyType: 'HASH'
+          }
+        ]
+      })
+    ])
   });
 });
