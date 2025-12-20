@@ -52,3 +52,34 @@ test('KMS CMK exists with rotation enabled', () => {
     Description: 'KMS key for K8s autoscaler encryption'
   });
 });
+
+test('SSM VPC endpoints and security groups configured', () => {
+  const app = new cdk.App();
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack');
+  const template = Template.fromStack(stack);
+
+  // Test VPC endpoints exist (4 endpoints: SSM, SSM Messages, EC2 Messages, KMS)
+  template.resourceCountIs('AWS::EC2::VPCEndpoint', 4);
+
+  // Test security group exists with correct description
+  template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+    GroupDescription: 'Security group for SSM endpoints'
+  });
+
+  // Test security group has ingress rule on port 443
+  template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+    SecurityGroupIngress: Match.arrayWith([
+      Match.objectLike({
+        FromPort: 443,
+        ToPort: 443,
+        IpProtocol: 'tcp'
+      })
+    ])
+  });
+
+  // Test VPC endpoints are interface type with security groups
+  template.hasResourceProperties('AWS::EC2::VPCEndpoint', {
+    VpcEndpointType: 'Interface',
+    SecurityGroupIds: Match.anyValue()
+  });
+});

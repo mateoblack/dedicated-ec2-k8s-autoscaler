@@ -6,6 +6,7 @@ import { Construct } from 'constructs';
 export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
   public readonly kmsKey: kms.Key;
+  public readonly ssmSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -39,6 +40,43 @@ export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
         }
       ],
       maxAzs: 3
+    });
+
+    // Security group for SSM access
+    this.ssmSecurityGroup = new ec2.SecurityGroup(this, 'SSMSecurityGroup', {
+      vpc: this.vpc,
+      description: 'Security group for SSM endpoints',
+      allowAllOutbound: false
+    });
+
+    this.ssmSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
+      ec2.Port.tcp(443),
+      'Allow HTTPS from VPC CIDR'
+    );
+
+    // VPC Endpoints for SSM
+    this.vpc.addInterfaceEndpoint('SSMEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SSM,
+      securityGroups: [this.ssmSecurityGroup]
+    });
+
+    // VPC Endpoints for SSM Messages
+    this.vpc.addInterfaceEndpoint('SSMMessagesEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SSM_MESSAGES,
+      securityGroups: [this.ssmSecurityGroup]
+    });
+
+    // VPC Endpoints for EC2 Messages
+    this.vpc.addInterfaceEndpoint('EC2MessagesEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.EC2_MESSAGES,
+      securityGroups: [this.ssmSecurityGroup]
+    });
+
+    // VPC Endpoints for KMS Messages
+    this.vpc.addInterfaceEndpoint('KMSEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.KMS,
+      securityGroups: [this.ssmSecurityGroup]
     });
 
     // Add secondary CIDR for pod communication
