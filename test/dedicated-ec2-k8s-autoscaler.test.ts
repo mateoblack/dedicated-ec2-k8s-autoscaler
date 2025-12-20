@@ -172,3 +172,45 @@ test('DynamoDB tables configured correctly', () => {
     ])
   });
 });
+
+test('Cluster name validation', () => {
+  const app = new cdk.App();
+
+  // Test invalid cluster names throw errors
+  expect(() => {
+    new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack1', {
+      clusterName: 'ab' // Too short
+    });
+  }).toThrow('clusterName must be at least 3 charaters');
+
+  expect(() => {
+    new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack2', {
+      clusterName: 'Invalid_Name' // Contains underscore
+    });
+  }).toThrow('clustername must only lowercase letters numbers and hyphens');
+
+  expect(() => {
+    new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack3', {
+      clusterName: 'Invalid-Name-With-CAPS' // Contains uppercase
+    });
+  }).toThrow('clustername must only lowercase letters numbers and hyphens');
+
+  // Test valid cluster name works
+  expect(() => {
+    new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack4', {
+      clusterName: 'valid-cluster-123'
+    });
+  }).not.toThrow();
+});
+
+test('SSM parameter names are correctly configured', () => {
+  const app = new cdk.App();
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack', {
+    clusterName: 'test-cluster'
+  });
+
+  // Test critical SSM parameter names exist and follow expected pattern
+  expect(stack.workerJoinParameterName).toBe('/test-cluster/kubeadm/worker-join');
+  expect(stack.controlPlaneJoinParameter).toBe('/test-cluster/kubeadm/control-plane-join');
+  expect(stack.oidcIssuerParameterName).toBe('/test-cluster/kubeadm/oidc-issuer');
+});

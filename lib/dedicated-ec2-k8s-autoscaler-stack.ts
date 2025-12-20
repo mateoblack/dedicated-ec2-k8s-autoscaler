@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as sms from 'aws-cdk-lib/aws-ssm';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
 export interface DedicatedEc2K8sAutoscalerProps {
@@ -30,9 +32,16 @@ export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
   public readonly ssmSecurityGroup: ec2.SecurityGroup;
   public readonly bootstrapLockTable: cdk.aws_dynamodb.Table;
   public readonly etcdMemberTable: cdk.aws_dynamodb.Table;
+  public readonly workerJoinParameterName: string;
+  public readonly controlPlaneJoinParameter: string;
+  public readonly oidcIssuerParameterName: string;
 
   constructor(scope: Construct, id: string, props: DedicatedEc2K8sAutoscalerProps) {
     super(scope, id);
+
+    this.workerJoinParameterName = `/${props.clusterName}/kubeadm/worker-join`;
+    this.controlPlaneJoinParameter = `/${props.clusterName}/kubeadm/control-plane-join`;
+    this.oidcIssuerParameterName = `/${props.clusterName}/kubeadm/oidc-issuer`;
 
     // Pre-req section
 
@@ -187,7 +196,5 @@ export class DedicatedEc2K8sAutoscalerStack extends cdk.Stack {
       },
       projectionType: cdk.aws_dynamodb.ProjectionType.ALL,
     });
-
-
   }
 }
