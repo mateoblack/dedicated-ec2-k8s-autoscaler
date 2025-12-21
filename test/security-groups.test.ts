@@ -70,16 +70,32 @@ test('Worker security group allows self traffic', () => {
   });
 });
 
-test('Worker security group allows all traffic from control plane', () => {
+test('Network stack creates control plane load balancer', () => {
   const app = new cdk.App();
   const stack = new NetworkStack(app, 'TestStack', {
     clusterName: 'test-cluster'
   });
   const template = Template.fromStack(stack);
 
-  // Worker SG allows all traffic from CP SG (for kubelet -> apiserver)
-  template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', {
-    IpProtocol: '-1',
-    SourceSecurityGroupId: Match.anyValue()
+  // Test internal NLB
+  template.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', {
+    Type: 'network',
+    Scheme: 'internal'
+  });
+
+  // Test target group
+  template.hasResourceProperties('AWS::ElasticLoadBalancingV2::TargetGroup', {
+    Port: 6443,
+    Protocol: 'TCP',
+    TargetType: 'instance',
+    HealthCheckProtocol: 'TCP',
+    HealthCheckPort: '6443',
+    HealthCheckIntervalSeconds: 30
+  });
+
+  // Test listener
+  template.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
+    Port: 6443,
+    Protocol: 'TCP'
   });
 });

@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { Construct } from 'constructs';
 
 export interface NetworkStackProps extends cdk.StackProps {
@@ -11,6 +12,8 @@ export class NetworkStack extends cdk.Stack {
   public readonly ssmSecurityGroup: ec2.SecurityGroup;
   public readonly controlPlaneSecurityGroup: ec2.SecurityGroup;
   public readonly workerSecurityGroup: ec2.SecurityGroup;
+  public readonly controlPlaneLoadBalancer: elbv2.NetworkLoadBalancer;
+  public readonly controlPlaneTargetGroup: elbv2.NetworkTargetGroup;
 
   constructor(scope: Construct, id: string, props: NetworkStackProps) {
     super(scope, id, props);
@@ -137,6 +140,35 @@ export class NetworkStack extends cdk.Stack {
       sourceSecurityGroupId: this.controlPlaneSecurityGroup.securityGroupId,
       ipProtocol: '-1',
       description: 'Allow all traffic from control plane nodes'
+    });
+
+    // Control plane load balancer (internal NLB)
+    this.controlPlaneLoadBalancer = new elbv2.NetworkLoadBalancer(this, 'ControlPlaneLoadBalancer', {
+      vpc: this.vpc,
+      internetFacing: false,
+      vpcSubnets: {
+        subnetGroupName: 'ControlPlane'
+      }
+    });
+
+    // Target group for control plane nodes
+    this.controlPlaneTargetGroup = new elbv2.NetworkTargetGroup(this, 'ControlPlaneTargetGroup', {
+      port: 6443,
+      protocol: elbv2.Protocol.TCP,
+      targetType: elbv2.TargetType.INSTANCE,
+      vpc: this.vpc,
+      healthCheck: {
+        protocol: elbv2.Protocol.TCP,
+        port: '6443',
+        interval: cdk.Duration.seconds(30)
+      }
+    });
+
+    // Listener for API server
+    this.controlPlaneLoadBalancer.addListener('ControlPlaneListener', {
+      port: 6443,
+      protocol: elbv2.Protocol.TCP,
+      defaultTargetGroups: [this.controlPlaneTargetGroup]
     });
   }
 }

@@ -24,3 +24,30 @@ test('Network stack creates VPC endpoints', () => {
 
   template.resourceCountIs('AWS::EC2::VPCEndpoint', 4);
 });
+
+test('Network stack creates control plane load balancer', () => {
+  const app = new cdk.App();
+  const stack = new NetworkStack(app, 'TestStack', {
+    clusterName: 'test-cluster'
+  });
+  const template = Template.fromStack(stack);
+
+  // Test internal NLB
+  template.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', {
+    Type: 'network',
+    Scheme: 'internal'
+  });
+
+  // Test target group
+  template.hasResourceProperties('AWS::ElasticLoadBalancingV2::TargetGroup', {
+    Port: 6443,
+    Protocol: 'TCP',
+    TargetType: 'instance'
+  });
+
+  // Test listener
+  template.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
+    Port: 6443,
+    Protocol: 'TCP'
+  });
+});
