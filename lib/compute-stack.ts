@@ -4,6 +4,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import { Construct } from 'constructs';
 
 export interface ComputeStackProps extends cdk.StackProps {
@@ -12,10 +13,13 @@ export interface ComputeStackProps extends cdk.StackProps {
   readonly kmsKey: kms.IKey;
   readonly controlPlaneSecurityGroup: ec2.SecurityGroup;
   readonly controlPlaneLoadBalancer: elbv2.NetworkLoadBalancer;
+  readonly controlPlaneSubnets: ec2.ISubnet[];
+  readonly vpc: ec2.IVpc;
 }
 
 export class ComputeStack extends cdk.Stack {
   public readonly controlPlaneLaunchTemplate: ec2.LaunchTemplate;
+  public readonly controlPlaneAutoScalingGroup: autoscaling.AutoScalingGroup;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
     super(scope, id, props);
@@ -64,6 +68,20 @@ chmod +x /tmp/bootstrap.sh
     cfnLaunchTemplate.addPropertyOverride('LaunchTemplateData.Placement.Tenancy', 'dedicated');
     cfnLaunchTemplate.addPropertyOverride('LaunchTemplateData.IamInstanceProfile.Name', controlPlaneInstanceProfile.instanceProfileName);
     cfnLaunchTemplate.addPropertyOverride('LaunchTemplateData.MetadataOptions.HttpPutResponseHopLimit', 2);
+
+    // Create VPC from subnets
+    const vpc = props.vpc;
+
+    // Control plane Auto Scaling Group
+    this.controlPlaneAutoScalingGroup = new autoscaling.AutoScalingGroup(this, 'ControlPlaneAutoScalingGroup', {
+      vpc,
+      vpcSubnets: { subnets: props.controlPlaneSubnets },
+      launchTemplate: this.controlPlaneLaunchTemplate,
+      minCapacity: 3,
+      maxCapacity: 10,
+      desiredCapacity: 3,
+      autoScalingGroupName: `${props.clusterName}-control-plane`
+    });
   }
 
   private createControlPlaneBootstrapScript(clusterName: string, nlbDnsName: string): string {

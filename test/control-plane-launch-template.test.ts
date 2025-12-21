@@ -4,7 +4,7 @@ import { ComputeStack } from '../lib/compute-stack';
 import { NetworkStack } from '../lib/network-stack';
 import { IamStack } from '../lib/iam-stack';
 
-test('Compute stack creates control plane launch template', () => {
+function createTestStack() {
   const app = new cdk.App();
   const iamStack = new IamStack(app, 'IamStack', {
     clusterName: 'test-cluster'
@@ -17,56 +17,31 @@ test('Compute stack creates control plane launch template', () => {
     controlPlaneRole: iamStack.controlPlaneRole,
     kmsKey: iamStack.kmsKey,
     controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer
+    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer,
+    controlPlaneSubnets: networkStack.controlPlaneSubnets,
+    vpc: networkStack.vpc
   });
-  const template = Template.fromStack(stack);
+  return { stack, template: Template.fromStack(stack) };
+}
 
+test('Compute stack creates control plane launch template', () => {
+  const { template } = createTestStack();
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateName: 'test-cluster-control-plane'
   });
 });
 
 test('Control plane launch template uses Amazon Linux 2023', () => {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const stack = new ComputeStack(app, 'TestStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer
-  });
-  const template = Template.fromStack(stack);
-
+  const { template } = createTestStack();
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
-      ImageId: Match.anyValue() // AL2023 AMI ID
+      ImageId: Match.anyValue()
     }
   });
 });
 
 test('Control plane launch template has dedicated tenancy', () => {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const stack = new ComputeStack(app, 'TestStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer
-  });
-  const template = Template.fromStack(stack);
-
+  const { template } = createTestStack();
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
       Placement: {
@@ -77,22 +52,7 @@ test('Control plane launch template has dedicated tenancy', () => {
 });
 
 test('Control plane launch template has correct security group and IAM role', () => {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const stack = new ComputeStack(app, 'TestStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer
-  });
-  const template = Template.fromStack(stack);
-
+  const { template } = createTestStack();
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
       SecurityGroupIds: Match.anyValue(),
@@ -104,22 +64,7 @@ test('Control plane launch template has correct security group and IAM role', ()
 });
 
 test('Control plane launch template requires IMDSv2', () => {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const stack = new ComputeStack(app, 'TestStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer
-  });
-  const template = Template.fromStack(stack);
-
+  const { template } = createTestStack();
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
       MetadataOptions: {
@@ -131,22 +76,7 @@ test('Control plane launch template requires IMDSv2', () => {
 });
 
 test('Control plane launch template has encrypted EBS volume', () => {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const stack = new ComputeStack(app, 'TestStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer
-  });
-  const template = Template.fromStack(stack);
-
+  const { template } = createTestStack();
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
       BlockDeviceMappings: [
@@ -165,25 +95,20 @@ test('Control plane launch template has encrypted EBS volume', () => {
 });
 
 test('Control plane launch template has user data with bootstrap script', () => {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const stack = new ComputeStack(app, 'TestStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer
-  });
-  const template = Template.fromStack(stack);
-
+  const { template } = createTestStack();
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
       UserData: Match.anyValue()
     }
+  });
+});
+
+test('Control plane Auto Scaling Group has correct configuration', () => {
+  const { template } = createTestStack();
+  template.hasResourceProperties('AWS::AutoScaling::AutoScalingGroup', {
+    AutoScalingGroupName: 'test-cluster-control-plane',
+    MinSize: '3',
+    MaxSize: '10',
+    DesiredCapacity: '3'
   });
 });

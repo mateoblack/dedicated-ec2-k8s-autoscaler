@@ -50,7 +50,9 @@ export class K8sClusterStack extends cdk.Stack {
       controlPlaneRole: this.iamStack.controlPlaneRole,
       kmsKey: this.iamStack.kmsKey,
       controlPlaneSecurityGroup: this.networkStack.controlPlaneSecurityGroup,
-      controlPlaneLoadBalancer: this.networkStack.controlPlaneLoadBalancer
+      controlPlaneLoadBalancer: this.networkStack.controlPlaneLoadBalancer,
+      controlPlaneSubnets: this.networkStack.controlPlaneSubnets,
+      vpc: this.networkStack.vpc
     });
   }
 }

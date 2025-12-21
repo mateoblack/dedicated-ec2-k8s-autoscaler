@@ -14,6 +14,7 @@ export class NetworkStack extends cdk.Stack {
   public readonly workerSecurityGroup: ec2.SecurityGroup;
   public readonly controlPlaneLoadBalancer: elbv2.NetworkLoadBalancer;
   public readonly controlPlaneTargetGroup: elbv2.NetworkTargetGroup;
+  public readonly controlPlaneSubnets: ec2.ISubnet[];
 
   constructor(scope: Construct, id: string, props: NetworkStackProps) {
     super(scope, id, props);
@@ -150,6 +151,11 @@ export class NetworkStack extends cdk.Stack {
         subnetGroupName: 'ControlPlane'
       }
     });
+
+    // Set control plane subnets
+    this.controlPlaneSubnets = this.vpc.selectSubnets({
+      subnetGroupName: 'ControlPlane'
+    }).subnets;
 
     // Target group for control plane nodes
     this.controlPlaneTargetGroup = new elbv2.NetworkTargetGroup(this, 'ControlPlaneTargetGroup', {
