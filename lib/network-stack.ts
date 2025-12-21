@@ -9,6 +9,8 @@ export interface NetworkStackProps extends cdk.StackProps {
 export class NetworkStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
   public readonly ssmSecurityGroup: ec2.SecurityGroup;
+  public readonly controlPlaneSecurityGroup: ec2.SecurityGroup;
+  public readonly workerSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props: NetworkStackProps) {
     super(scope, id, props);
@@ -86,6 +88,55 @@ export class NetworkStack extends cdk.Stack {
         availabilityZone: az,
         tags: [{ key: 'Name', value: `PodCommunication-${index + 1}` }]
       }).addDependency(secondaryCidr);
+    });
+
+    // Kubernetes security groups
+    this.controlPlaneSecurityGroup = new ec2.SecurityGroup(this, 'ControlPlaneSecurityGroup', {
+      vpc: this.vpc,
+      description: `Security group for Kubernetes control plane nodes in ${props.clusterName} cluster`,
+      allowAllOutbound: true
+    });
+
+    this.workerSecurityGroup = new ec2.SecurityGroup(this, 'WorkerSecurityGroup', {
+      vpc: this.vpc,
+      description: `Security group for Kubernetes worker nodes in ${props.clusterName} cluster`,
+      allowAllOutbound: true
+    });
+
+    // Control plane security group rules
+    // CP SG allows all traffic from itself (using CfnSecurityGroupIngress to avoid circular dependency)
+    new ec2.CfnSecurityGroupIngress(this, 'ControlPlaneSelfIngress', {
+      groupId: this.controlPlaneSecurityGroup.securityGroupId,
+      sourceSecurityGroupId: this.controlPlaneSecurityGroup.securityGroupId,
+      ipProtocol: '-1',
+      description: 'Allow all traffic from control plane nodes'
+    });
+
+    // CP SG allows TCP 6443 from worker SG (using CfnSecurityGroupIngress to avoid circular dependency)
+    new ec2.CfnSecurityGroupIngress(this, 'ControlPlaneApiServerIngress', {
+      groupId: this.controlPlaneSecurityGroup.securityGroupId,
+      sourceSecurityGroupId: this.workerSecurityGroup.securityGroupId,
+      ipProtocol: 'tcp',
+      fromPort: 6443,
+      toPort: 6443,
+      description: 'Allow API server access from worker nodes'
+    });
+
+    // Worker security group rules
+    // Worker SG allows all traffic from itself (using CfnSecurityGroupIngress to avoid circular dependency)
+    new ec2.CfnSecurityGroupIngress(this, 'WorkerSelfIngress', {
+      groupId: this.workerSecurityGroup.securityGroupId,
+      sourceSecurityGroupId: this.workerSecurityGroup.securityGroupId,
+      ipProtocol: '-1',
+      description: 'Allow all traffic from worker nodes'
+    });
+
+    // Worker SG allows all traffic from CP SG (using CfnSecurityGroupIngress to avoid circular dependency)
+    new ec2.CfnSecurityGroupIngress(this, 'WorkerFromControlPlaneIngress', {
+      groupId: this.workerSecurityGroup.securityGroupId,
+      sourceSecurityGroupId: this.controlPlaneSecurityGroup.securityGroupId,
+      ipProtocol: '-1',
+      description: 'Allow all traffic from control plane nodes'
     });
   }
 }
