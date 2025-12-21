@@ -58,10 +58,58 @@ test('IAM stack node role and KMS', () => {
     Description: 'CMK KMS for DedicatedEc2K8s: test-cluster'
   });
 
-  // Test IAM role
+  // Test IAM roles
   template.hasResourceProperties('AWS::IAM::Role', {
-    RoleName: 'test-cluster-node-role',
-    Description: 'IAM role for Kubernetes nodes in test-cluster cluster'
+    RoleName: 'test-cluster-control-plane-role',
+    Description: 'IAM role for Kubernetes control plane nodes in test-cluster cluster'
+  });
+
+  template.hasResourceProperties('AWS::IAM::Role', {
+    RoleName: 'test-cluster-worker-node-role',
+    Description: 'IAM role for Kubernetes worker nodes in test-cluster cluster'
+  });
+
+  // Test DynamoDB permissions
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem", 
+            "dynamodb:UpdateItem",
+            "dynamodb:DeleteItem",
+            "dynamodb:Query",
+            "dynamodb:Scan"
+          ],
+          Resource: Match.arrayWith([
+            Match.objectLike({
+              "Fn::Join": Match.anyValue()
+            })
+          ])
+        })
+      ])
+    }
+  });
+
+  // Test S3 permissions
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject", 
+            "s3:ListBucket"
+          ],
+          Resource: [
+            "arn:aws:s3:::test-cluster-bootstrap-*",
+            "arn:aws:s3:::test-cluster-bootstrap-*/*"
+          ]
+        })
+      ])
+    }
   });
 });
 

@@ -39,8 +39,7 @@ export class K8sClusterStack extends cdk.Stack {
     // Database stack (DynamoDB, S3)
     this.databaseStack = new DatabaseStack(this, 'Database', {
       clusterName: props.clusterName,
-      kmsKey: this.iamStack.kmsKey,
-      nodeRole: this.iamStack.nodeRole
+      kmsKey: this.iamStack.kmsKey
     });
   }
 }

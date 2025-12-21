@@ -8,7 +8,6 @@ import { Construct } from 'constructs';
 export interface DatabaseStackProps extends cdk.StackProps {
   readonly clusterName: string;
   readonly kmsKey: kms.IKey;
-  readonly nodeRole: iam.Role;
 }
 
 export class DatabaseStack extends cdk.Stack {

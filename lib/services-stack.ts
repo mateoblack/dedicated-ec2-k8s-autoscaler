@@ -4,6 +4,7 @@ import { Construct } from 'constructs';
 
 export interface ServicesStackProps extends cdk.StackProps {
   readonly clusterName: string;
+  readonly kmsKey?: kms.IKey;
 }
 
 export class ServicesStack extends cdk.Stack {
