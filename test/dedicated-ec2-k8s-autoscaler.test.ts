@@ -214,3 +214,85 @@ test('SSM parameter names are correctly configured', () => {
   expect(stack.controlPlaneJoinParameter).toBe('/test-cluster/kubeadm/control-plane-join');
   expect(stack.oidcIssuerParameterName).toBe('/test-cluster/kubeadm/oidc-issuer');
 });
+
+test('IAM node role configured correctly', () => {
+  const app = new cdk.App();
+  const stack = new DedicatedEc2K8sAutoscaler.DedicatedEc2K8sAutoscalerStack(app, 'TestStack', {
+    clusterName: 'test-cluster'
+  });
+  const template = Template.fromStack(stack);
+
+  // Test IAM role exists with correct properties
+  template.hasResourceProperties('AWS::IAM::Role', {
+    RoleName: 'test-cluster-node-role',
+    Description: 'IAM role for Kubernetes nodes in test-cluster cluster',
+    AssumeRolePolicyDocument: {
+      Statement: [
+        {
+          Action: 'sts:AssumeRole',
+          Effect: 'Allow',
+          Principal: {
+            Service: 'ec2.amazonaws.com'
+          }
+        }
+      ]
+    },
+    ManagedPolicyArns: [
+      {
+        'Fn::Join': [
+          '',
+          [
+            'arn:',
+            { Ref: 'AWS::Partition' },
+            ':iam::aws:policy/AmazonSSMManagedInstanceCore'
+          ]
+        ]
+      }
+    ]
+  });
+
+  // Test SSM policy for cluster parameters
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: [
+            'ssm:GetParameter',
+            'ssm:GetParameters',
+            'ssm:PutParameter',
+            'ssm:DeletedParameter',
+            'ssm:DescribedParameters'
+          ],
+          Effect: 'Allow',
+          Resource: {
+            'Fn::Join': [
+              '',
+              [
+                'arn:aws:ssm:',
+                { Ref: 'AWS::Region' },
+                ':',
+                { Ref: 'AWS::AccountId' },
+                ':parameter/test-cluster/*'
+              ]
+            ]
+          }
+        })
+      ])
+    }
+  });
+
+  // Test KMS permissions are granted to node role
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: [
+            'kms:Decrypt',
+            'kms:DescribeKey'
+          ],
+          Effect: 'Allow'
+        })
+      ])
+    }
+  });
+});
