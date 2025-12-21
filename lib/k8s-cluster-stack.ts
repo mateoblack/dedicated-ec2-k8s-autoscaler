@@ -5,6 +5,7 @@ import { ServicesStack } from './services-stack';
 import { NetworkStack } from './network-stack';
 import { IamStack } from './iam-stack';
 import { DatabaseStack } from './database-stack';
+import { ComputeStack } from './compute-stack';
 
 export interface K8sClusterStackProps extends cdk.StackProps {
   readonly clusterName: string;
@@ -16,6 +17,7 @@ export class K8sClusterStack extends cdk.Stack {
   public readonly networkStack: NetworkStack;
   public readonly iamStack: IamStack;
   public readonly databaseStack: DatabaseStack;
+  public readonly computeStack: ComputeStack;
 
   constructor(scope: Construct, id: string, props: K8sClusterStackProps) {
     super(scope, id, props);
@@ -40,6 +42,15 @@ export class K8sClusterStack extends cdk.Stack {
     this.databaseStack = new DatabaseStack(this, 'Database', {
       clusterName: props.clusterName,
       kmsKey: this.iamStack.kmsKey
+    });
+
+    // Compute stack (launch templates, auto scaling groups)
+    this.computeStack = new ComputeStack(this, 'Compute', {
+      clusterName: props.clusterName,
+      controlPlaneRole: this.iamStack.controlPlaneRole,
+      kmsKey: this.iamStack.kmsKey,
+      controlPlaneSecurityGroup: this.networkStack.controlPlaneSecurityGroup,
+      controlPlaneLoadBalancer: this.networkStack.controlPlaneLoadBalancer
     });
   }
 }
