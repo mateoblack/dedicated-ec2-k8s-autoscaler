@@ -3,7 +3,7 @@
 > A dedicated-instance, self-healing Kubernetes 
 controlplane on EC2
 
-## What This is 
+## What This Is 
 
 This project creates a fully self-managed Kubernetes
 cluster on AWS using EC2 dedicated instances, deployed and reconciled with AWS CDK 
@@ -86,7 +86,7 @@ The hardest part being **etcd lifecycle management** in the K8 control plane nod
 * Not recommend as the replacement of as this project is experemential 
 ---
 
-Status - Active build
+Status - Active build and not ready for use
 
 --- 
 

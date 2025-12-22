@@ -6,6 +6,7 @@ import { NetworkStack } from './network-stack';
 import { IamStack } from './iam-stack';
 import { DatabaseStack } from './database-stack';
 import { ComputeStack } from './compute-stack';
+import { EgressStack } from './egress-stack';
 
 export interface K8sClusterStackProps extends cdk.StackProps {
   readonly clusterName: string;
@@ -18,6 +19,7 @@ export class K8sClusterStack extends cdk.Stack {
   public readonly iamStack: IamStack;
   public readonly databaseStack: DatabaseStack;
   public readonly computeStack: ComputeStack;
+  public readonly egressStack: EgressStack;
 
   constructor(scope: Construct, id: string, props: K8sClusterStackProps) {
     super(scope, id, props);
@@ -35,6 +37,12 @@ export class K8sClusterStack extends cdk.Stack {
 
     // Network stack (VPC, subnets, endpoints)
     this.networkStack = new NetworkStack(this, 'Network', {
+      clusterName: props.clusterName
+    });
+
+    // Egress stack (public subnets, NAT Gateway, internet routing)
+    this.egressStack = new EgressStack(this, 'Egress', {
+      vpc: this.networkStack.vpc,
       clusterName: props.clusterName
     });
 
