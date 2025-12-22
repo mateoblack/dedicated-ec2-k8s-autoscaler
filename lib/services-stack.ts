@@ -29,6 +29,5 @@ export class ServicesStack extends cdk.Stack {
     // SSM parameter names for kubeadm join commands
     this.workerJoinParameterName = `/${props.clusterName}/kubeadm/worker-join`;
     this.controlPlaneJoinParameter = `/${props.clusterName}/kubeadm/control-plane-join`;
-    this.oidcIssuerParameterName = `/${props.clusterName}/kubeadm/oidc-issuer`;
   }
 }
