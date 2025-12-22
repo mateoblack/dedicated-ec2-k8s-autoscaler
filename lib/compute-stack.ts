@@ -92,15 +92,72 @@ set -e
 # Control plane bootstrap script for ${clusterName}
 echo "Starting control plane bootstrap for cluster: ${clusterName}"
 
+# Get configuration from SSM parameters
+KUBELET_VERSION=$(aws ssm get-parameter --name "/${clusterName}/control/kubelet/version" --query 'Parameter.Value' --output text --region ${this.region})
+K8S_VERSION=$(aws ssm get-parameter --name "/${clusterName}/control/kubernetes/version" --query 'Parameter.Value' --output text --region ${this.region})
+CONTAINER_RUNTIME=$(aws ssm get-parameter --name "/${clusterName}/control/container/runtime" --query 'Parameter.Value' --output text --region ${this.region})
+
+echo "Kubelet version: $KUBELET_VERSION"
+echo "Kubernetes version: $K8S_VERSION"
+echo "Container runtime: $CONTAINER_RUNTIME"
+
 # Update system
 yum update -y
 
-# Install required packages
-yum install -y docker kubelet kubeadm kubectl
+# Function to download binary from S3 or fallback to public
+download_k8s_binary() {
+    local binary_name=$1
+    local version=$2
+    local s3_bucket="${clusterName}-bootstrap"
+    
+    echo "Downloading $binary_name version $version"
+    
+    # Try S3 first
+    if aws s3 cp "s3://$s3_bucket/binaries/$binary_name-$version" "/usr/bin/$binary_name" --region ${this.region} 2>/dev/null; then
+        echo "Downloaded $binary_name from S3"
+    else
+        echo "S3 download failed, downloading from public repository"
+        # Fallback to public Kubernetes release
+        if curl -L "https://dl.k8s.io/release/v$version/bin/linux/amd64/$binary_name" -o "/usr/bin/$binary_name"; then
+            echo "Downloaded $binary_name from public repository"
+        else
+            echo "ERROR: Failed to download $binary_name from both S3 and public repository"
+            exit 1
+        fi
+    fi
+    
+    # Verify download and set permissions
+    if [ ! -f "/usr/bin/$binary_name" ] || [ ! -s "/usr/bin/$binary_name" ]; then
+        echo "ERROR: $binary_name download failed or file is empty"
+        exit 1
+    fi
+    
+    chmod +x "/usr/bin/$binary_name"
+    echo "Successfully installed $binary_name"
+}
 
-# Configure Docker
-systemctl enable docker
-systemctl start docker
+# Download Kubernetes binaries (kubelet, kubeadm, kubectl should all use same version)
+download_k8s_binary "kubelet" "$KUBELET_VERSION"
+download_k8s_binary "kubeadm" "$KUBELET_VERSION"
+download_k8s_binary "kubectl" "$KUBELET_VERSION"
+
+# Install and configure container runtime
+if [ "$CONTAINER_RUNTIME" = "containerd" ]; then
+    yum install -y containerd
+    systemctl enable containerd
+    systemctl start containerd
+    
+    # Configure containerd for Kubernetes
+    mkdir -p /etc/containerd
+    containerd config default > /etc/containerd/config.toml
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    systemctl restart containerd
+else
+    # Fallback to Docker
+    yum install -y docker
+    systemctl enable docker
+    systemctl start docker
+fi
 
 # Configure kubelet
 systemctl enable kubelet

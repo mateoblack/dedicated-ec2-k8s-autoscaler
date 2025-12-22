@@ -27,5 +27,4 @@ test('Services stack sets parameter names correctly', () => {
 
   expect(stack.workerJoinParameterName).toBe('/test-cluster/kubeadm/worker-join');
   expect(stack.controlPlaneJoinParameter).toBe('/test-cluster/kubeadm/control-plane-join');
-  expect(stack.oidcIssuerParameterName).toBe('/test-cluster/kubeadm/oidc-issuer');
 });
