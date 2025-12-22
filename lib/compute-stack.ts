@@ -80,7 +80,8 @@ chmod +x /tmp/bootstrap.sh
       minCapacity: 3,
       maxCapacity: 10,
       desiredCapacity: 3,
-      autoScalingGroupName: `${props.clusterName}-control-plane`
+      autoScalingGroupName: `${props.clusterName}-control-plane`,
+      defaultInstanceWarmup: cdk.Duration.minutes(15)
     });
   }
 
