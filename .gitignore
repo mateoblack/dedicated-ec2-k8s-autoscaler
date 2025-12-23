@@ -1,4 +1,4 @@
 node_modules
-.kiro
+.kiro/*
 cdk.out
 cdk.context.json
