@@ -125,7 +125,6 @@ test('Control plane Auto Scaling Group has correct configuration', () => {
     AutoScalingGroupName: 'test-cluster-control-plane',
     MinSize: '3',
     MaxSize: '10',
-    DesiredCapacity: '3'
   });
 });
 

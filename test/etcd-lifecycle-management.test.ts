@@ -115,7 +115,8 @@ describe('etcd lifecycle management', () => {
     expect(true).toBe(true);
   });
   
-  test.todo('Lambda function has DynamoDB read/write permissions');
-  test.todo('Lambda function has EC2 permissions for lifecycle hooks');
-  test.todo('Lambda function can call etcdctl member remove');
+  // Note: Additional comprehensive tests implemented in dedicated files:
+  // - DynamoDB permissions: dynamodb-permissions.test.ts
+  // - EC2 permissions: ec2-permissions.test.ts  
+  // - SSM/etcdctl permissions: ssm-permissions.test.ts
 });

@@ -96,7 +96,6 @@ export class ComputeStack extends cdk.Stack {
       launchTemplate: this.controlPlaneLaunchTemplate,
       minCapacity: 3,
       maxCapacity: 10,
-      desiredCapacity: 3,
       autoScalingGroupName: `${props.clusterName}-control-plane`,
       defaultInstanceWarmup: cdk.Duration.minutes(15)
     });
@@ -200,7 +199,6 @@ export class ComputeStack extends cdk.Stack {
       vpcSubnets: { subnets: props.workerSubnets },
       minCapacity: 1,
       maxCapacity: 10,
-      desiredCapacity: 3,
       healthCheck: autoscaling.HealthCheck.ec2({ grace: cdk.Duration.minutes(5) }),
       updatePolicy: autoscaling.UpdatePolicy.rollingUpdate()
     });

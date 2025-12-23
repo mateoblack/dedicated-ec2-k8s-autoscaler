@@ -85,8 +85,7 @@ describe('Worker Node Launch Template and ASG', () => {
     template.hasResourceProperties('AWS::AutoScaling::AutoScalingGroup', {
       AutoScalingGroupName: 'test-cluster-worker',
       MinSize: '1',
-      MaxSize: '10',
-      DesiredCapacity: '3'
+      MaxSize: '10'
     });
   });
 
