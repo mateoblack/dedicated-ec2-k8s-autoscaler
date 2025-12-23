@@ -3,6 +3,7 @@ import { Template, Match } from 'aws-cdk-lib/assertions';
 import { ComputeStack } from '../lib/compute-stack';
 import { NetworkStack } from '../lib/network-stack';
 import { IamStack } from '../lib/iam-stack';
+import { ServicesStack } from '../lib/services-stack';
 
 function createTestStack() {
   const app = new cdk.App();
@@ -12,6 +13,9 @@ function createTestStack() {
   const networkStack = new NetworkStack(app, 'NetworkStack', {
     clusterName: 'test-cluster'
   });
+  const servicesStack = new ServicesStack(app, 'ServicesStack', {
+    clusterName: 'test-cluster'
+  });
   const stack = new ComputeStack(app, 'TestStack', {
     clusterName: 'test-cluster',
     controlPlaneRole: iamStack.controlPlaneRole,
@@ -19,7 +23,10 @@ function createTestStack() {
     controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
     controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer,
     controlPlaneSubnets: networkStack.controlPlaneSubnets,
-    vpc: networkStack.vpc
+    vpc: networkStack.vpc,
+    kubeletVersionParameter: servicesStack.kubeletVersionParameter,
+    kubernetesVersionParameter: servicesStack.kubernetesVersionParameter,
+    containerRuntimeParameter: servicesStack.containerRuntimeParameter
   });
   return { stack, template: Template.fromStack(stack) };
 }

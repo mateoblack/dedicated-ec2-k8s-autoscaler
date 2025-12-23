@@ -15,6 +15,9 @@ export interface ComputeStackProps extends cdk.StackProps {
   readonly controlPlaneLoadBalancer: elbv2.NetworkLoadBalancer;
   readonly controlPlaneSubnets: ec2.ISubnet[];
   readonly vpc: ec2.IVpc;
+  readonly kubeletVersionParameter: ssm.StringParameter;
+  readonly kubernetesVersionParameter: ssm.StringParameter;
+  readonly containerRuntimeParameter: ssm.StringParameter;
 }
 
 export class ComputeStack extends cdk.Stack {
@@ -45,11 +48,14 @@ export class ComputeStack extends cdk.Stack {
       securityGroup: props.controlPlaneSecurityGroup,
       role: props.controlPlaneRole,
       userData: ec2.UserData.custom(
-        `#!/bin/bash
-# Download and execute bootstrap script from SSM
-aws ssm get-parameter --name "${bootstrapScript.parameterName}" --query "Parameter.Value" --output text --region ${this.region} > /tmp/bootstrap.sh
-chmod +x /tmp/bootstrap.sh
-/tmp/bootstrap.sh`
+        cdk.Fn.join('', [
+          '#!/bin/bash\n',
+          '# Config hash: ', props.kubeletVersionParameter.stringValue, '-', props.kubernetesVersionParameter.stringValue, '-', props.containerRuntimeParameter.stringValue, '\n',
+          '# Download and execute bootstrap script from SSM\n',
+          'aws ssm get-parameter --name "', bootstrapScript.parameterName, '" --query "Parameter.Value" --output text --region ', this.region, ' > /tmp/bootstrap.sh\n',
+          'chmod +x /tmp/bootstrap.sh\n',
+          '/tmp/bootstrap.sh'
+        ])
       ),
       blockDevices: [{
         deviceName: '/dev/xvda',

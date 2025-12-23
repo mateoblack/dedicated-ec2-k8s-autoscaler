@@ -60,7 +60,10 @@ export class K8sClusterStack extends cdk.Stack {
       controlPlaneSecurityGroup: this.networkStack.controlPlaneSecurityGroup,
       controlPlaneLoadBalancer: this.networkStack.controlPlaneLoadBalancer,
       controlPlaneSubnets: this.networkStack.controlPlaneSubnets,
-      vpc: this.networkStack.vpc
+      vpc: this.networkStack.vpc,
+      kubeletVersionParameter: this.servicesStack.kubeletVersionParameter,
+      kubernetesVersionParameter: this.servicesStack.kubernetesVersionParameter,
+      containerRuntimeParameter: this.servicesStack.containerRuntimeParameter
     });
   }
 }

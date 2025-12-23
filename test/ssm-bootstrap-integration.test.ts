@@ -23,7 +23,10 @@ function createTestStacks() {
     controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
     controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer,
     controlPlaneSubnets: networkStack.controlPlaneSubnets,
-    vpc: networkStack.vpc
+    vpc: networkStack.vpc,
+    kubeletVersionParameter: servicesStack.kubeletVersionParameter,
+    kubernetesVersionParameter: servicesStack.kubernetesVersionParameter,
+    containerRuntimeParameter: servicesStack.containerRuntimeParameter
   });
   return { 
     computeStack, 
@@ -72,6 +75,28 @@ test('Bootstrap script parameter contains CloudFormation function for dynamic co
     Name: '/test-cluster/bootstrap/control-plane',
     Value: {
       'Fn::Join': Match.anyValue()
+    }
+  });
+});
+
+test('UserData contains config hash from kubelet version parameter', () => {
+  const { computeTemplate } = createTestStacks();
+  
+  computeTemplate.hasResourceProperties('AWS::EC2::LaunchTemplate', {
+    LaunchTemplateData: {
+      UserData: {
+        'Fn::Base64': {
+          'Fn::Join': [
+            '',
+            Match.arrayWith([
+              Match.stringLikeRegexp('Config hash:'),
+              {
+                'Fn::ImportValue': Match.stringLikeRegexp('KubeletVersion.*Value')
+              }
+            ])
+          ]
+        }
+      }
     }
   });
 });
