@@ -63,7 +63,8 @@ export class K8sClusterStack extends cdk.Stack {
       vpc: this.networkStack.vpc,
       kubeletVersionParameter: this.servicesStack.kubeletVersionParameter,
       kubernetesVersionParameter: this.servicesStack.kubernetesVersionParameter,
-      containerRuntimeParameter: this.servicesStack.containerRuntimeParameter
+      containerRuntimeParameter: this.servicesStack.containerRuntimeParameter,
+      etcdMemberTable: this.databaseStack.etcdMemberTable
     });
   }
 }

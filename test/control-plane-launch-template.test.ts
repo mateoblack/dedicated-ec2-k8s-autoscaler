@@ -4,6 +4,7 @@ import { ComputeStack } from '../lib/compute-stack';
 import { NetworkStack } from '../lib/network-stack';
 import { IamStack } from '../lib/iam-stack';
 import { ServicesStack } from '../lib/services-stack';
+import { DatabaseStack } from '../lib/database-stack';
 
 function createTestStack() {
   const app = new cdk.App();
@@ -16,6 +17,10 @@ function createTestStack() {
   const servicesStack = new ServicesStack(app, 'ServicesStack', {
     clusterName: 'test-cluster'
   });
+  const databaseStack = new DatabaseStack(app, 'DatabaseStack', {
+    clusterName: 'test-cluster',
+    kmsKey: iamStack.kmsKey
+  });
   const stack = new ComputeStack(app, 'TestStack', {
     clusterName: 'test-cluster',
     controlPlaneRole: iamStack.controlPlaneRole,
@@ -26,7 +31,8 @@ function createTestStack() {
     vpc: networkStack.vpc,
     kubeletVersionParameter: servicesStack.kubeletVersionParameter,
     kubernetesVersionParameter: servicesStack.kubernetesVersionParameter,
-    containerRuntimeParameter: servicesStack.containerRuntimeParameter
+    containerRuntimeParameter: servicesStack.containerRuntimeParameter,
+    etcdMemberTable: databaseStack.etcdMemberTable
   });
   return { stack, template: Template.fromStack(stack) };
 }
@@ -117,5 +123,48 @@ test('Control plane Auto Scaling Group has correct configuration', () => {
     MinSize: '3',
     MaxSize: '10',
     DesiredCapacity: '3'
+  });
+});
+
+test('etcd lifecycle Lambda function is created', () => {
+  const { template } = createTestStack();
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    FunctionName: 'test-cluster-etcd-lifecycle',
+    Runtime: 'python3.11',
+    Handler: 'index.handler',
+    Environment: {
+      Variables: {
+        CLUSTER_NAME: 'test-cluster',
+        ETCD_TABLE_NAME: {
+          'Fn::ImportValue': Match.stringLikeRegexp('EtcdMemberTable')
+        }
+      }
+    }
+  });
+});
+
+test('AutoScaling Group has lifecycle hook for etcd cleanup', () => {
+  const { template } = createTestStack();
+  template.hasResourceProperties('AWS::AutoScaling::LifecycleHook', {
+    LifecycleHookName: 'test-cluster-etcd-cleanup',
+    LifecycleTransition: 'autoscaling:EC2_INSTANCE_TERMINATING',
+    DefaultResult: 'CONTINUE',
+    HeartbeatTimeout: 600
+  });
+});
+
+test('EventBridge rule triggers Lambda on lifecycle events', () => {
+  const { template } = createTestStack();
+  template.hasResourceProperties('AWS::Events::Rule', {
+    Name: 'test-cluster-etcd-lifecycle-rule',
+    EventPattern: {
+      source: ['aws.autoscaling'],
+      'detail-type': ['EC2 Instance-terminate Lifecycle Action'],
+      detail: {
+        AutoScalingGroupName: [{
+          'Ref': Match.stringLikeRegexp('ControlPlaneAutoScalingGroup')
+        }]
+      }
+    }
   });
 });

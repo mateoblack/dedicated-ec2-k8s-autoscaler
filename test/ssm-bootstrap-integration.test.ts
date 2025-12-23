@@ -4,6 +4,7 @@ import { ComputeStack } from '../lib/compute-stack';
 import { NetworkStack } from '../lib/network-stack';
 import { IamStack } from '../lib/iam-stack';
 import { ServicesStack } from '../lib/services-stack';
+import { DatabaseStack } from '../lib/database-stack';
 
 function createTestStacks() {
   const app = new cdk.App();
@@ -16,6 +17,10 @@ function createTestStacks() {
   const servicesStack = new ServicesStack(app, 'ServicesStack', {
     clusterName: 'test-cluster'
   });
+  const databaseStack = new DatabaseStack(app, 'DatabaseStack', {
+    clusterName: 'test-cluster',
+    kmsKey: iamStack.kmsKey
+  });
   const computeStack = new ComputeStack(app, 'ComputeStack', {
     clusterName: 'test-cluster',
     controlPlaneRole: iamStack.controlPlaneRole,
@@ -26,7 +31,8 @@ function createTestStacks() {
     vpc: networkStack.vpc,
     kubeletVersionParameter: servicesStack.kubeletVersionParameter,
     kubernetesVersionParameter: servicesStack.kubernetesVersionParameter,
-    containerRuntimeParameter: servicesStack.containerRuntimeParameter
+    containerRuntimeParameter: servicesStack.containerRuntimeParameter,
+    etcdMemberTable: databaseStack.etcdMemberTable
   });
   return { 
     computeStack, 
