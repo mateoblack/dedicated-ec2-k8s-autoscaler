@@ -56,10 +56,13 @@ export class K8sClusterStack extends cdk.Stack {
     this.computeStack = new ComputeStack(this, 'Compute', {
       clusterName: props.clusterName,
       controlPlaneRole: this.iamStack.controlPlaneRole,
+      workerNodeRole: this.iamStack.workerNodeRole,
       kmsKey: this.iamStack.kmsKey,
       controlPlaneSecurityGroup: this.networkStack.controlPlaneSecurityGroup,
+      workerSecurityGroup: this.networkStack.workerSecurityGroup,
       controlPlaneLoadBalancer: this.networkStack.controlPlaneLoadBalancer,
       controlPlaneSubnets: this.networkStack.controlPlaneSubnets,
+      workerSubnets: this.networkStack.vpc.selectSubnets({ subnetGroupName: 'DataPlane' }).subnets,
       vpc: this.networkStack.vpc,
       kubeletVersionParameter: this.servicesStack.kubeletVersionParameter,
       kubernetesVersionParameter: this.servicesStack.kubernetesVersionParameter,

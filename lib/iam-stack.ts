@@ -12,6 +12,8 @@ export class IamStack extends cdk.Stack {
   public readonly controlPlaneRole: iam.Role;
   public readonly workerNodeRole: iam.Role;
   public readonly kmsKey: kms.IKey;
+  public readonly oidcProvider: iam.OpenIdConnectProvider;
+  public readonly clusterAutoscalerIrsaRole: iam.Role;
 
   constructor(scope: Construct, id: string, props: IamStackProps) {
     super(scope, id, props);
@@ -99,6 +101,63 @@ export class IamStack extends cdk.Stack {
           "aws:RequestedRegion": this.region
         }
       }
+    }));
+
+    // Create OIDC Identity Provider for IRSA (self-managed cluster)
+    const clusterId = `${props.clusterName}-cluster`;
+    // For self-managed K8s, OIDC URL should point to the cluster's API server
+    // This will be configured during cluster bootstrap to point to the actual API server
+    const oidcUrl = `https://kubernetes.${props.clusterName}.local`; // Placeholder - will be updated during deployment
+    
+    this.oidcProvider = new iam.OpenIdConnectProvider(this, 'OIDCProvider', {
+      url: oidcUrl,
+      clientIds: ['sts.amazonaws.com'],
+      thumbprints: ['9e99a48a9960b14926bb7f3b02e22da2b0ab7280'] // Will need actual cluster CA thumbprint
+    });
+
+    // Create IRSA role for cluster-autoscaler without conditions first
+    this.clusterAutoscalerIrsaRole = new iam.Role(this, 'ClusterAutoscalerIrsaRole', {
+      roleName: `${props.clusterName}-cluster-autoscaler-irsa`,
+      description: `IRSA role for cluster-autoscaler in ${props.clusterName} cluster`,
+      assumedBy: new iam.WebIdentityPrincipal(this.oidcProvider.openIdConnectProviderArn)
+    });
+
+    // Override assume role policy with CfnJson for proper token resolution
+    const cfnRole = this.clusterAutoscalerIrsaRole.node.defaultChild as iam.CfnRole;
+    const conditionJson = new cdk.CfnJson(this, 'IrsaCondition', {
+      value: {
+        StringEquals: {
+          [`${oidcUrl}:aud`]: 'sts.amazonaws.com',
+          [`${oidcUrl}:sub`]: 'system:serviceaccount:kube-system:cluster-autoscaler'
+        }
+      }
+    });
+
+    cfnRole.assumeRolePolicyDocument = {
+      Version: '2012-10-17',
+      Statement: [{
+        Effect: 'Allow',
+        Principal: {
+          Federated: this.oidcProvider.openIdConnectProviderArn
+        },
+        Action: 'sts:AssumeRoleWithWebIdentity',
+        Condition: conditionJson
+      }]
+    };
+
+    // Add cluster-autoscaler permissions to IRSA role
+    this.clusterAutoscalerIrsaRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'autoscaling:DescribeAutoScalingGroups',
+        'autoscaling:DescribeAutoScalingInstances',
+        'autoscaling:DescribeLaunchConfigurations',
+        'autoscaling:DescribeTags',
+        'autoscaling:SetDesiredCapacity',
+        'autoscaling:TerminateInstanceInAutoScalingGroup',
+        'ec2:DescribeInstances',
+        'ec2:DescribeLaunchTemplateVersions'
+      ],
+      resources: ['*']
     }));
   }
 

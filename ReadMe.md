@@ -94,12 +94,6 @@ Active build and not ready for use
 
 ---
 
-## Roadmap
-
-1. Implement OIDC Provider steps 
-
----
-
 Licence
 
 Apache 2.0
