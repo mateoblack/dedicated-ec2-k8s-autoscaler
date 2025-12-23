@@ -1,5 +1,7 @@
 # Self-Managed Kubernetes on Dedicated Instances (CDK)
 
+> **Experimental**
+
 > A dedicated-instance, self-healing Kubernetes 
 controlplane on EC2
 
@@ -31,7 +33,7 @@ AWS.
 
 ---
 
-What Problems This Solves 
+## What Problems This Solves 
 
 Running fully distributed Kubernetes control plane yourself can be complex. EKS solves this problem but, for highly restrictive environments full control over the cluster will be required so, in this use using EKS is not possible.
 
@@ -86,9 +88,17 @@ The hardest part being **etcd lifecycle management** in the K8 control plane nod
 * Not recommend as the replacement of as this project is experemential 
 ---
 
-Status - Active build and not ready for use
+## Status 
 
---- 
+Active build and not ready for use
+
+---
+
+## Roadmap
+
+1. Implement OIDC Provider steps 
+
+---
 
 Licence
 

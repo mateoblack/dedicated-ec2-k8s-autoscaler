@@ -24,10 +24,13 @@ function createTestStacks() {
   const computeStack = new ComputeStack(app, 'ComputeStack', {
     clusterName: 'test-cluster',
     controlPlaneRole: iamStack.controlPlaneRole,
+    workerNodeRole: iamStack.workerNodeRole,
     kmsKey: iamStack.kmsKey,
     controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
+    workerSecurityGroup: networkStack.workerSecurityGroup,
     controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer,
     controlPlaneSubnets: networkStack.controlPlaneSubnets,
+    workerSubnets: networkStack.vpc.selectSubnets({ subnetGroupName: 'DataPlane' }).subnets,
     vpc: networkStack.vpc,
     kubeletVersionParameter: servicesStack.kubeletVersionParameter,
     kubernetesVersionParameter: servicesStack.kubernetesVersionParameter,

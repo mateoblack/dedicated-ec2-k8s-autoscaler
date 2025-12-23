@@ -14,10 +14,13 @@ import { Construct } from 'constructs';
 export interface ComputeStackProps extends cdk.StackProps {
   readonly clusterName: string;
   readonly controlPlaneRole: iam.Role;
+  readonly workerNodeRole: iam.Role;
   readonly kmsKey: kms.IKey;
   readonly controlPlaneSecurityGroup: ec2.SecurityGroup;
+  readonly workerSecurityGroup: ec2.SecurityGroup;
   readonly controlPlaneLoadBalancer: elbv2.NetworkLoadBalancer;
   readonly controlPlaneSubnets: ec2.ISubnet[];
+  readonly workerSubnets: ec2.ISubnet[];
   readonly vpc: ec2.IVpc;
   readonly kubeletVersionParameter: ssm.StringParameter;
   readonly kubernetesVersionParameter: ssm.StringParameter;
@@ -28,6 +31,8 @@ export interface ComputeStackProps extends cdk.StackProps {
 export class ComputeStack extends cdk.Stack {
   public readonly controlPlaneLaunchTemplate: ec2.LaunchTemplate;
   public readonly controlPlaneAutoScalingGroup: autoscaling.AutoScalingGroup;
+  public readonly workerLaunchTemplate: ec2.LaunchTemplate;
+  public readonly workerAutoScalingGroup: autoscaling.AutoScalingGroup;
   public readonly etcdLifecycleLambda: lambda.Function;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
@@ -152,6 +157,60 @@ export class ComputeStack extends cdk.Stack {
         }
       },
       targets: [new targets.LambdaFunction(this.etcdLifecycleLambda)]
+    });
+
+    // Worker node launch template
+    const workerConfigHash = cdk.Fn.join('', [
+      props.kubeletVersionParameter.parameterName,
+      props.kubernetesVersionParameter.parameterName,
+      props.containerRuntimeParameter.parameterName
+    ]);
+
+    this.workerLaunchTemplate = new ec2.LaunchTemplate(this, 'WorkerLaunchTemplate', {
+      launchTemplateName: `${props.clusterName}-worker`,
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.M5, ec2.InstanceSize.LARGE),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      role: props.workerNodeRole,
+      securityGroup: props.workerSecurityGroup,
+      userData: ec2.UserData.custom(
+        cdk.Fn.join('', [
+          '#!/bin/bash\n',
+          'set -euo pipefail\n',
+          `# Config hash for rolling updates: ${workerConfigHash}\n`,
+          this.createWorkerBootstrapScript(props.clusterName)
+        ])
+      ),
+      requireImdsv2: true,
+      detailedMonitoring: true,
+      blockDevices: [{
+        deviceName: '/dev/xvda',
+        volume: ec2.BlockDeviceVolume.ebs(20, {
+          volumeType: ec2.EbsDeviceVolumeType.GP3,
+          encrypted: true,
+          kmsKey: props.kmsKey
+        })
+      }]
+    });
+
+    // Worker AutoScaling Group
+    this.workerAutoScalingGroup = new autoscaling.AutoScalingGroup(this, 'WorkerAutoScalingGroup', {
+      autoScalingGroupName: `${props.clusterName}-worker`,
+      launchTemplate: this.workerLaunchTemplate,
+      vpc: props.vpc,
+      vpcSubnets: { subnets: props.workerSubnets },
+      minCapacity: 1,
+      maxCapacity: 10,
+      desiredCapacity: 3,
+      healthCheck: autoscaling.HealthCheck.ec2({ grace: cdk.Duration.minutes(5) }),
+      updatePolicy: autoscaling.UpdatePolicy.rollingUpdate()
+    });
+
+    // Add cluster-autoscaler tags to worker ASG
+    cdk.Tags.of(this.workerAutoScalingGroup).add('k8s.io/cluster-autoscaler/enabled', 'true', {
+      applyToLaunchedInstances: false
+    });
+    cdk.Tags.of(this.workerAutoScalingGroup).add(`k8s.io/cluster-autoscaler/${props.clusterName}`, 'owned', {
+      applyToLaunchedInstances: false
     });
   }
 
@@ -454,6 +513,109 @@ def complete_lifecycle_action(asg_name, hook_name, token, instance_id, result):
         logger.info(f"Completed lifecycle action for {instance_id} with result {result}")
     except Exception as e:
         logger.error(f"Failed to complete lifecycle action: {str(e)}")
+`;
+  }
+
+  private createWorkerBootstrapScript(clusterName: string): string {
+    return `
+# Get SSM parameters
+KUBELET_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubelet/version" --query 'Parameter.Value' --output text --region ${this.region})
+KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region ${this.region})
+CONTAINER_RUNTIME=$(aws ssm get-parameter --name "/${clusterName}/container/runtime" --query 'Parameter.Value' --output text --region ${this.region})
+
+# Download binaries with S3 fallback
+download_binary() {
+    local binary_name=$1
+    local version=$2
+    local s3_bucket="${clusterName}-bootstrap-${this.account}"
+    
+    # Try S3 first
+    if aws s3 cp "s3://$s3_bucket/binaries/$binary_name-$version" "/usr/local/bin/$binary_name" 2>/dev/null; then
+        echo "Downloaded $binary_name from S3"
+    else
+        echo "S3 download failed, trying public repository"
+        case $binary_name in
+            kubelet)
+                curl -L "https://dl.k8s.io/release/v$version/bin/linux/amd64/kubelet" -o "/usr/local/bin/kubelet"
+                ;;
+            kubectl)
+                curl -L "https://dl.k8s.io/release/v$version/bin/linux/amd64/kubectl" -o "/usr/local/bin/kubectl"
+                ;;
+        esac
+    fi
+    chmod +x "/usr/local/bin/$binary_name"
+}
+
+# Install container runtime
+if [ "$CONTAINER_RUNTIME" = "containerd" ]; then
+    yum install -y containerd
+    systemctl enable containerd
+    systemctl start containerd
+fi
+
+# Download Kubernetes binaries
+download_binary "kubelet" "$KUBELET_VERSION"
+download_binary "kubectl" "$KUBERNETES_VERSION"
+
+# Configure kubelet for worker node
+mkdir -p /etc/kubernetes/kubelet
+cat > /etc/kubernetes/kubelet/kubelet-config.yaml << 'EOF'
+kind: KubeletConfiguration
+apiVersion: kubelet.config.k8s.io/v1beta1
+address: 0.0.0.0
+port: 10250
+readOnlyPort: 0
+cgroupDriver: systemd
+cgroupsPerQOS: true
+enforceNodeAllocatable: ["pods"]
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    enabled: true
+  x509:
+    clientCAFile: "/etc/kubernetes/pki/ca.crt"
+authorization:
+  mode: Webhook
+clusterDomain: "cluster.local"
+clusterDNS: ["10.96.0.10"]
+runtimeRequestTimeout: "15m"
+kubeReserved:
+  cpu: 100m
+  memory: 128Mi
+systemReserved:
+  cpu: 100m
+  memory: 128Mi
+EOF
+
+# Create kubelet systemd service
+cat > /etc/systemd/system/kubelet.service << 'EOF'
+[Unit]
+Description=kubelet: The Kubernetes Node Agent
+Documentation=https://kubernetes.io/docs/home/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kubelet \\
+  --config=/etc/kubernetes/kubelet/kubelet-config.yaml \\
+  --container-runtime-endpoint=unix:///run/containerd/containerd.sock \\
+  --kubeconfig=/etc/kubernetes/kubelet.conf \\
+  --bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf \\
+  --v=2
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable kubelet (will start after joining cluster)
+systemctl daemon-reload
+systemctl enable kubelet
+
+echo "Worker node bootstrap completed"
 `;
   }
 }
