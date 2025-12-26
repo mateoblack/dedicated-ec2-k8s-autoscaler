@@ -137,6 +137,9 @@ rm cilium-linux-amd64.tar.gz{,.sha256sum}
 sudo ctr image pull quay.io/cilium/cilium:v${CILIUM_VERSION}
 sudo ctr image pull quay.io/cilium/operator-generic:v${CILIUM_VERSION}
 
+# Pre-pull cluster autoscaler image
+sudo ctr image pull registry.k8s.io/autoscaling/cluster-autoscaler:v${K8S_VERSION}
+
 # Pre-pull Kubernetes images
 sudo kubeadm config images pull --kubernetes-version=${K8S_VERSION}
 
