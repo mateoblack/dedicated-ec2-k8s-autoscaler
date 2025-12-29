@@ -28,7 +28,7 @@ source "amazon-ebs" "k8s-worker" {
       virtualization-type = "hvm"
     }
     most_recent = true
-    owners      = ["137112412989"]
+    owners      = ["045324592363"]
   }
   ssh_username = "ec2-user"
 }

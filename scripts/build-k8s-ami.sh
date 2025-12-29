@@ -20,8 +20,8 @@ packer {
 
 source "amazon-ebs" "k8s" {
   ami_name      = "k8s-control-plane-{{timestamp}}"
-  instance_type = "t3.medium"
-  region        = "us-west-2"
+  instance_type = "m5.large"
+  region        = "us-gov-west-1"
   source_ami_filter {
     filters = {
       name                = "al2023-ami-*-x86_64"
@@ -29,7 +29,7 @@ source "amazon-ebs" "k8s" {
       virtualization-type = "hvm"
     }
     most_recent = true
-    owners      = ["137112412989"]
+    owners      = ["045324592363"]
   }
   ssh_username = "ec2-user"
 }
