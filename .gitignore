@@ -2,3 +2,4 @@ node_modules
 .kiro/*
 cdk.out
 cdk.context.json
+bin/k8s-cluster.ts
