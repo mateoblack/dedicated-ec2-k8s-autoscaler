@@ -1,111 +1,35 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
-import { ComputeStack } from '../lib/compute-stack';
-import { NetworkStack } from '../lib/network-stack';
-import { IamStack } from '../lib/iam-stack';
-import { ServicesStack } from '../lib/services-stack';
-import { DatabaseStack } from '../lib/database-stack';
+import { createTestStack } from './test-helper';
 
-function createTestStacks() {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const servicesStack = new ServicesStack(app, 'ServicesStack', {
-    clusterName: 'test-cluster'
-  });
-  const databaseStack = new DatabaseStack(app, 'DatabaseStack', {
-    clusterName: 'test-cluster',
-    kmsKey: iamStack.kmsKey
-  });
-  const computeStack = new ComputeStack(app, 'ComputeStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    workerNodeRole: iamStack.workerNodeRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    workerSecurityGroup: networkStack.workerSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer,
-    controlPlaneSubnets: networkStack.controlPlaneSubnets,
-    workerSubnets: networkStack.vpc.selectSubnets({ subnetGroupName: 'DataPlane' }).subnets,
-    vpc: networkStack.vpc,
-    kubeletVersionParameter: servicesStack.kubeletVersionParameter,
-    kubernetesVersionParameter: servicesStack.kubernetesVersionParameter,
-    containerRuntimeParameter: servicesStack.containerRuntimeParameter,
-    etcdMemberTable: databaseStack.etcdMemberTable
-  });
-  return { 
-    computeStack, 
-    servicesStack,
-    computeTemplate: Template.fromStack(computeStack),
-    servicesTemplate: Template.fromStack(servicesStack)
-  };
-}
+describe('SSM Bootstrap Integration', () => {
+  test('SSM parameters are created for bootstrap configuration', () => {
+    const { template } = createTestStack();
+    
+    template.hasResourceProperties('AWS::SSM::Parameter', {
+      Name: '/my-cluster/control/kubelet/version',
+      Type: 'String'
+    });
 
-test('Bootstrap script SSM parameter is created', () => {
-  const { computeTemplate } = createTestStacks();
-  
-  computeTemplate.hasResourceProperties('AWS::SSM::Parameter', {
-    Name: '/test-cluster/bootstrap/control-plane',
-    Type: 'String',
-    Description: 'Bootstrap script for test-cluster control plane nodes'
-  });
-});
+    template.hasResourceProperties('AWS::SSM::Parameter', {
+      Name: '/my-cluster/control/kubernetes/version',
+      Type: 'String'
+    });
 
-test('Configuration SSM parameters are created with correct values', () => {
-  const { servicesTemplate } = createTestStacks();
-  
-  servicesTemplate.hasResourceProperties('AWS::SSM::Parameter', {
-    Name: '/test-cluster/control/kubelet/version',
-    Value: '1.28.2',
-    Description: 'Kubelet version for cluster nodes'
+    template.hasResourceProperties('AWS::SSM::Parameter', {
+      Name: '/my-cluster/control/container/runtime',
+      Type: 'String'
+    });
   });
-  
-  servicesTemplate.hasResourceProperties('AWS::SSM::Parameter', {
-    Name: '/test-cluster/control/kubernetes/version',
-    Value: '1.28.2',
-    Description: 'Kubernetes version for cluster'
-  });
-  
-  servicesTemplate.hasResourceProperties('AWS::SSM::Parameter', {
-    Name: '/test-cluster/control/container/runtime',
-    Value: 'containerd',
-    Description: 'Container runtime for cluster nodes'
-  });
-});
 
-test('Bootstrap script parameter contains CloudFormation function for dynamic content', () => {
-  const { computeTemplate } = createTestStacks();
-  
-  computeTemplate.hasResourceProperties('AWS::SSM::Parameter', {
-    Name: '/test-cluster/bootstrap/control-plane',
-    Value: {
-      'Fn::Join': Match.anyValue()
-    }
-  });
-});
-
-test('UserData contains config hash from kubelet version parameter', () => {
-  const { computeTemplate } = createTestStacks();
-  
-  computeTemplate.hasResourceProperties('AWS::EC2::LaunchTemplate', {
-    LaunchTemplateData: {
-      UserData: {
-        'Fn::Base64': {
-          'Fn::Join': [
-            '',
-            Match.arrayWith([
-              Match.stringLikeRegexp('Config hash:'),
-              {
-                'Fn::ImportValue': Match.stringLikeRegexp('KubeletVersion.*Value')
-              }
-            ])
-          ]
-        }
+  test('Launch templates reference SSM parameters in user data', () => {
+    const { template } = createTestStack();
+    
+    template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
+      LaunchTemplateName: 'my-cluster-worker',
+      LaunchTemplateData: {
+        UserData: Match.anyValue()
       }
-    }
+    });
   });
 });

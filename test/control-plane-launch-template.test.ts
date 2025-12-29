@@ -1,41 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
-import { ComputeStack } from '../lib/compute-stack';
-import { NetworkStack } from '../lib/network-stack';
-import { IamStack } from '../lib/iam-stack';
-import { ServicesStack } from '../lib/services-stack';
-import { DatabaseStack } from '../lib/database-stack';
+import { K8sClusterStack } from '../lib/k8s-cluster-stack';
 
 function createTestStack() {
   const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const networkStack = new NetworkStack(app, 'NetworkStack', {
-    clusterName: 'test-cluster'
-  });
-  const servicesStack = new ServicesStack(app, 'ServicesStack', {
-    clusterName: 'test-cluster'
-  });
-  const databaseStack = new DatabaseStack(app, 'DatabaseStack', {
+  const stack = new K8sClusterStack(app, 'TestStack', {
     clusterName: 'test-cluster',
-    kmsKey: iamStack.kmsKey
-  });
-  const stack = new ComputeStack(app, 'TestStack', {
-    clusterName: 'test-cluster',
-    controlPlaneRole: iamStack.controlPlaneRole,
-    workerNodeRole: iamStack.workerNodeRole,
-    kmsKey: iamStack.kmsKey,
-    controlPlaneSecurityGroup: networkStack.controlPlaneSecurityGroup,
-    workerSecurityGroup: networkStack.workerSecurityGroup,
-    controlPlaneLoadBalancer: networkStack.controlPlaneLoadBalancer,
-    controlPlaneSubnets: networkStack.controlPlaneSubnets,
-    workerSubnets: networkStack.vpc.selectSubnets({ subnetGroupName: 'DataPlane' }).subnets,
-    vpc: networkStack.vpc,
-    kubeletVersionParameter: servicesStack.kubeletVersionParameter,
-    kubernetesVersionParameter: servicesStack.kubernetesVersionParameter,
-    containerRuntimeParameter: servicesStack.containerRuntimeParameter,
-    etcdMemberTable: databaseStack.etcdMemberTable
+    env: { account: '123456789012', region: 'us-west-2' }
   });
   return { stack, template: Template.fromStack(stack) };
 }
@@ -138,7 +109,7 @@ test('etcd lifecycle Lambda function is created', () => {
       Variables: {
         CLUSTER_NAME: 'test-cluster',
         ETCD_TABLE_NAME: {
-          'Fn::ImportValue': Match.stringLikeRegexp('EtcdMemberTable')
+          'Ref': Match.stringLikeRegexp('EtcdMemberTable')
         }
       }
     }

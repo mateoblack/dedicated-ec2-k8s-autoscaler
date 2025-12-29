@@ -1,11 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
-import { NetworkStack } from '../lib/network-stack';
+import { K8sClusterStack } from '../lib/k8s-cluster-stack';
 
 test('Network stack creates VPC with dedicated tenancy', () => {
   const app = new cdk.App();
-  const stack = new NetworkStack(app, 'TestStack', {
-    clusterName: 'test-cluster'
+  const stack = new K8sClusterStack(app, 'TestStack', {
+    clusterName: 'test-cluster',
+    env: { account: '123456789012', region: 'us-west-2' }
   });
   const template = Template.fromStack(stack);
 
@@ -17,8 +18,9 @@ test('Network stack creates VPC with dedicated tenancy', () => {
 
 test('Network stack creates VPC endpoints', () => {
   const app = new cdk.App();
-  const stack = new NetworkStack(app, 'TestStack', {
-    clusterName: 'test-cluster'
+  const stack = new K8sClusterStack(app, 'TestStack', {
+    clusterName: 'test-cluster',
+    env: { account: '123456789012', region: 'us-west-2' }
   });
   const template = Template.fromStack(stack);
 
@@ -27,8 +29,9 @@ test('Network stack creates VPC endpoints', () => {
 
 test('Network stack creates control plane load balancer', () => {
   const app = new cdk.App();
-  const stack = new NetworkStack(app, 'TestStack', {
-    clusterName: 'test-cluster'
+  const stack = new K8sClusterStack(app, 'TestStack', {
+    clusterName: 'test-cluster',
+    env: { account: '123456789012', region: 'us-west-2' }
   });
   const template = Template.fromStack(stack);
 

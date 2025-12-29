@@ -1,28 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
-import { DatabaseStack } from '../lib/database-stack';
-import { IamStack } from '../lib/iam-stack';
-
-function createTestStacks() {
-  const app = new cdk.App();
-  const iamStack = new IamStack(app, 'IamStack', {
-    clusterName: 'test-cluster'
-  });
-  const databaseStack = new DatabaseStack(app, 'DatabaseStack', {
-    clusterName: 'test-cluster',
-    kmsKey: iamStack.kmsKey
-  });
-  return {
-    databaseStack,
-    databaseTemplate: Template.fromStack(databaseStack)
-  };
-}
+import { createTestStack } from './test-helper';
 
 test('etcd member table has correct structure for lifecycle management', () => {
-  const { databaseTemplate } = createTestStacks();
+  const { template } = createTestStack();
   
-  databaseTemplate.hasResourceProperties('AWS::DynamoDB::Table', {
-    TableName: 'test-cluster-etcd-members',
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    TableName: 'my-cluster-etcd-members',
     AttributeDefinitions: [
       {
         AttributeName: 'ClusterId',
@@ -55,9 +39,9 @@ test('etcd member table has correct structure for lifecycle management', () => {
 });
 
 test('etcd member table has GSI for instance ID lookups', () => {
-  const { databaseTemplate } = createTestStacks();
+  const { template } = createTestStack();
   
-  databaseTemplate.hasResourceProperties('AWS::DynamoDB::Table', {
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
     GlobalSecondaryIndexes: [
       {
         IndexName: 'InstanceIdIndex',
@@ -88,10 +72,10 @@ test('etcd member table has GSI for instance ID lookups', () => {
 });
 
 test('bootstrap lock table supports TTL for automatic cleanup', () => {
-  const { databaseTemplate } = createTestStacks();
+  const { template } = createTestStack();
   
-  databaseTemplate.hasResourceProperties('AWS::DynamoDB::Table', {
-    TableName: 'test-cluster-bootstrap-lock',
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    TableName: 'my-cluster-bootstrap-lock',
     TimeToLiveSpecification: {
       AttributeName: 'ExpiresAt',
       Enabled: true

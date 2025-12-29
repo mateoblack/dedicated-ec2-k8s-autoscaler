@@ -1,17 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
-import * as kms from 'aws-cdk-lib/aws-kms';
-import * as iam from 'aws-cdk-lib/aws-iam';
 import { Template } from 'aws-cdk-lib/assertions';
-import { DatabaseStack } from '../lib/database-stack';
+import { K8sClusterStack } from '../lib/k8s-cluster-stack';
 
 test('Database stack creates DynamoDB tables', () => {
   const app = new cdk.App();
-  const keyStack = new cdk.Stack(app, 'KeyStack');
-  const kmsKey = new kms.Key(keyStack, 'TestKey');
-  
-  const stack = new DatabaseStack(app, 'TestStack', {
+  const stack = new K8sClusterStack(app, 'TestStack', {
     clusterName: 'test-cluster',
-    kmsKey: kmsKey
+    env: { account: '123456789012', region: 'us-west-2' }
   });
   const template = Template.fromStack(stack);
 
@@ -26,12 +21,9 @@ test('Database stack creates DynamoDB tables', () => {
 
 test('Database stack creates S3 bucket', () => {
   const app = new cdk.App();
-  const keyStack = new cdk.Stack(app, 'KeyStack');
-  const kmsKey = new kms.Key(keyStack, 'TestKey');
-  
-  const stack = new DatabaseStack(app, 'TestStack', {
+  const stack = new K8sClusterStack(app, 'TestStack', {
     clusterName: 'test-cluster',
-    kmsKey: kmsKey
+    env: { account: '123456789012', region: 'us-west-2' }
   });
   const template = Template.fromStack(stack);
 

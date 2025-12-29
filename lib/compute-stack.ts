@@ -55,6 +55,9 @@ export class ComputeStack extends Construct {
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.M5, ec2.InstanceSize.LARGE), // K8s recommendation
       securityGroup: props.controlPlaneSecurityGroup,
       role: props.controlPlaneRole,
+      userData: ec2.UserData.forLinux({
+        shebang: '#!/bin/bash'
+      }),
       blockDevices: [{
         deviceName: '/dev/xvda',
         volume: ec2.BlockDeviceVolume.ebs(150, {
@@ -66,6 +69,11 @@ export class ComputeStack extends Construct {
       requireImdsv2: true,
       detailedMonitoring: true
     });
+
+    // Add control plane bootstrap script
+    this.controlPlaneLaunchTemplate.userData?.addCommands(
+      this.createControlPlaneBootstrapScript(props.clusterName)
+    );
 
     // Set dedicated tenancy and fix IMDS configuration
     const cfnLaunchTemplate = this.controlPlaneLaunchTemplate.node.defaultChild as ec2.CfnLaunchTemplate;
@@ -170,6 +178,9 @@ export class ComputeStack extends Construct {
       }),
       role: props.workerNodeRole,
       securityGroup: props.workerSecurityGroup,
+      userData: ec2.UserData.forLinux({
+        shebang: '#!/bin/bash'
+      }),
       requireImdsv2: true,
       detailedMonitoring: true,
       blockDevices: [{
@@ -181,6 +192,11 @@ export class ComputeStack extends Construct {
         })
       }]
     });
+
+    // Add worker bootstrap script
+    this.workerLaunchTemplate.userData?.addCommands(
+      this.createWorkerBootstrapScript(props.clusterName)
+    );
 
     // Worker AutoScaling Group
     this.workerAutoScalingGroup = new autoscaling.AutoScalingGroup(this, 'WorkerAutoScalingGroup', {
@@ -521,6 +537,35 @@ systemctl daemon-reload
 systemctl enable kubelet
 
 echo "Worker node bootstrap completed"
+`;
+  }
+
+  private createControlPlaneBootstrapScript(clusterName: string): string {
+    return `
+# Control plane bootstrap script
+echo "Starting control plane bootstrap for cluster: ${clusterName}"
+
+# Install required packages
+yum update -y
+yum install -y docker kubelet kubeadm kubectl
+
+# Configure Docker
+systemctl enable docker
+systemctl start docker
+
+# Configure kubelet
+systemctl enable kubelet
+
+# Initialize or join cluster
+if [ ! -f /etc/kubernetes/admin.conf ]; then
+  echo "Initializing Kubernetes cluster..."
+  kubeadm init --pod-network-cidr=10.244.0.0/16
+else
+  echo "Joining existing cluster..."
+  # Join logic would go here
+fi
+
+echo "Control plane bootstrap completed"
 `;
   }
 }
