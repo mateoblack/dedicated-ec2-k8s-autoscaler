@@ -11,7 +11,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { Construct } from 'constructs';
 
-export interface ComputeStackProps extends cdk.StackProps {
+export interface ComputeStackProps {
   readonly clusterName: string;
   readonly controlPlaneRole: iam.Role;
   readonly workerNodeRole: iam.Role;
@@ -28,7 +28,7 @@ export interface ComputeStackProps extends cdk.StackProps {
   readonly etcdMemberTable: dynamodb.Table;
 }
 
-export class ComputeStack extends cdk.Stack {
+export class ComputeStack extends Construct {
   public readonly controlPlaneLaunchTemplate: ec2.LaunchTemplate;
   public readonly controlPlaneAutoScalingGroup: autoscaling.AutoScalingGroup;
   public readonly workerLaunchTemplate: ec2.LaunchTemplate;
@@ -36,7 +36,7 @@ export class ComputeStack extends cdk.Stack {
   public readonly etcdLifecycleLambda: lambda.Function;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
-    super(scope, id, props);
+    super(scope, id);
 
     // Create instance profile for control plane role
     const controlPlaneInstanceProfile = new iam.InstanceProfile(this, 'ControlPlaneInstanceProfile', {
@@ -50,7 +50,7 @@ export class ComputeStack extends cdk.Stack {
     this.controlPlaneLaunchTemplate = new ec2.LaunchTemplate(this, 'ControlPlaneLaunchTemplate', {
       launchTemplateName: `${props.clusterName}-control-plane`,
       machineImage: ec2.MachineImage.genericLinux({
-        [this.region]: controlPlaneAmiId,
+        [cdk.Stack.of(this).region]: controlPlaneAmiId,
       }),
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.M5, ec2.InstanceSize.LARGE), // K8s recommendation
       securityGroup: props.controlPlaneSecurityGroup,
@@ -88,25 +88,34 @@ export class ComputeStack extends cdk.Stack {
     });
 
     // Lambda function for etcd member lifecycle management
+    const etcdLifecycleRole = new iam.Role(this, 'EtcdLifecycleRole', {
+      roleName: `${props.clusterName}-etcd-lifecycle-role`,
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ]
+    });
+
     this.etcdLifecycleLambda = new lambda.Function(this, 'EtcdLifecycleLambda', {
       functionName: `${props.clusterName}-etcd-lifecycle`,
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'index.handler',
       code: lambda.Code.fromInline(this.createEtcdLifecycleLambdaCode(props.clusterName)),
       timeout: cdk.Duration.minutes(5),
+      role: etcdLifecycleRole,
       environment: {
         CLUSTER_NAME: props.clusterName,
         ETCD_TABLE_NAME: props.etcdMemberTable.tableName,
-        REGION: this.region,
+        REGION: cdk.Stack.of(this).region,
         CONTROL_PLANE_ASG_NAME: `${props.clusterName}-control-plane`
       }
     });
 
     // Grant Lambda permissions
-    props.etcdMemberTable.grantReadWriteData(this.etcdLifecycleLambda);
-    props.kmsKey.grantDecrypt(this.etcdLifecycleLambda);
+    props.etcdMemberTable.grantReadWriteData(etcdLifecycleRole);
+    props.kmsKey.grantDecrypt(etcdLifecycleRole);
     
-    this.etcdLifecycleLambda.addToRolePolicy(new iam.PolicyStatement({
+    etcdLifecycleRole.addToPolicy(new iam.PolicyStatement({
       actions: [
         'autoscaling:CompleteLifecycleAction',
         'ec2:DescribeInstances'
@@ -157,7 +166,7 @@ export class ComputeStack extends cdk.Stack {
       launchTemplateName: `${props.clusterName}-worker`,
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.M5, ec2.InstanceSize.LARGE),
       machineImage: ec2.MachineImage.genericLinux({
-        [this.region]: workerAmiId,
+        [cdk.Stack.of(this).region]: workerAmiId,
       }),
       role: props.workerNodeRole,
       securityGroup: props.workerSecurityGroup,
@@ -415,15 +424,15 @@ def complete_lifecycle_action(asg_name, hook_name, token, instance_id, result):
   private createWorkerBootstrapScript(clusterName: string): string {
     return `
 # Get SSM parameters
-KUBELET_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubelet/version" --query 'Parameter.Value' --output text --region ${this.region})
-KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region ${this.region})
-CONTAINER_RUNTIME=$(aws ssm get-parameter --name "/${clusterName}/container/runtime" --query 'Parameter.Value' --output text --region ${this.region})
+KUBELET_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubelet/version" --query 'Parameter.Value' --output text --region ${cdk.Stack.of(this).region})
+KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region ${cdk.Stack.of(this).region})
+CONTAINER_RUNTIME=$(aws ssm get-parameter --name "/${clusterName}/container/runtime" --query 'Parameter.Value' --output text --region ${cdk.Stack.of(this).region})
 
 # Download binaries with S3 fallback
 download_binary() {
     local binary_name=$1
     local version=$2
-    local s3_bucket="${clusterName}-bootstrap-${this.account}"
+    local s3_bucket="${clusterName}-bootstrap-${cdk.Stack.of(this).account}"
     
     # Try S3 first
     if aws s3 cp "s3://$s3_bucket/binaries/$binary_name-$version" "/usr/local/bin/$binary_name" 2>/dev/null; then

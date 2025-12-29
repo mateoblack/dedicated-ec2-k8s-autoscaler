@@ -5,18 +5,18 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
-export interface DatabaseStackProps extends cdk.StackProps {
+export interface DatabaseStackProps {
   readonly clusterName: string;
   readonly kmsKey: kms.IKey;
 }
 
-export class DatabaseStack extends cdk.Stack {
+export class DatabaseStack extends Construct {
   public readonly bootstrapLockTable: dynamodb.Table;
   public readonly etcdMemberTable: dynamodb.Table;
   public readonly bootstrapBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
-    super(scope, id, props);
+    super(scope, id);
 
     // Bootstrap lock table for leader election
     this.bootstrapLockTable = new dynamodb.Table(this, "BootstrapLockTable", {

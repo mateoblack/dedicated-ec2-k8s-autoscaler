@@ -3,11 +3,11 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { Construct } from 'constructs';
 
-export interface NetworkStackProps extends cdk.StackProps {
+export interface NetworkStackProps {
   readonly clusterName: string;
 }
 
-export class NetworkStack extends cdk.Stack {
+export class NetworkStack extends Construct {
   public readonly vpc: ec2.Vpc;
   public readonly ssmSecurityGroup: ec2.SecurityGroup;
   public readonly controlPlaneSecurityGroup: ec2.SecurityGroup;
@@ -17,7 +17,7 @@ export class NetworkStack extends cdk.Stack {
   public readonly controlPlaneSubnets: ec2.ISubnet[];
 
   constructor(scope: Construct, id: string, props: NetworkStackProps) {
-    super(scope, id, props);
+    super(scope, id);
 
     // Create VPC with dedicated tenancy
     this.vpc = new ec2.Vpc(this, 'DedicatedVpc', {

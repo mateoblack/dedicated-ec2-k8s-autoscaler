@@ -3,12 +3,12 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
-export interface ServicesStackProps extends cdk.StackProps {
+export interface ServicesStackProps {
   readonly clusterName: string;
   readonly kmsKey?: kms.IKey;
 }
 
-export class ServicesStack extends cdk.Stack {
+export class ServicesStack extends Construct {
   public readonly workerJoinParameterName: string;
   public readonly controlPlaneJoinParameter: string;
   public readonly kubeletVersionParameter: ssm.StringParameter;
@@ -16,7 +16,7 @@ export class ServicesStack extends cdk.Stack {
   public readonly containerRuntimeParameter: ssm.StringParameter;
 
   constructor(scope: Construct, id: string, props: ServicesStackProps) {
-    super(scope, id, props);
+    super(scope, id);
 
     // Validate cluster name
     if (!props.clusterName || props.clusterName.length < 3) {

@@ -7,7 +7,11 @@ const app = new cdk.App();
 
 // Default Option: KMS is created automatically
 new K8sClusterStack(app, 'K8sClusterStack', {
-  clusterName: 'my-cluster'
+  clusterName: 'my-cluster',
+  env: {
+    account: '<your-account-number>',
+    region: 'us-gov-west-1', // GovCloud region
+  },
 });
 
 // Option 2: Provide your own KMS key

@@ -3,12 +3,12 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import { Construct } from 'constructs';
 
-export interface IamStackProps extends cdk.StackProps {
+export interface IamStackProps {
   readonly clusterName: string;
   readonly kmsKey?: kms.IKey;
 }
 
-export class IamStack extends cdk.Stack {
+export class IamStack extends Construct {
   public readonly controlPlaneRole: iam.Role;
   public readonly workerNodeRole: iam.Role;
   public readonly kmsKey: kms.IKey;
@@ -16,7 +16,7 @@ export class IamStack extends cdk.Stack {
   public readonly clusterAutoscalerIrsaRole: iam.Role;
 
   constructor(scope: Construct, id: string, props: IamStackProps) {
-    super(scope, id, props);
+    super(scope, id);
 
     // Create or use provided KMS key
     this.kmsKey = props.kmsKey ?? new kms.Key(this, "ClusterCMK", {
@@ -98,7 +98,7 @@ export class IamStack extends cdk.Stack {
       resources: ["*"],
       conditions: {
         StringEquals: {
-          "aws:RequestedRegion": this.region
+          "aws:RequestedRegion": cdk.Stack.of(this).region
         }
       }
     }));
@@ -171,7 +171,7 @@ export class IamStack extends cdk.Stack {
         "ssm:DescribeParameters",
       ],
       resources: [
-        `arn:aws:ssm:${this.region}:${this.account}:parameter/${clusterName}/*`
+        `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/${clusterName}/*`
       ]
     }));
   }
@@ -185,7 +185,7 @@ export class IamStack extends cdk.Stack {
         "logs:DescribeLogStreams"
       ],
       resources: [
-        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/kubernetes/${clusterName}/*`
+        `arn:aws:logs:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:log-group:/aws/kubernetes/${clusterName}/*`
       ]
     }));
   }
@@ -201,9 +201,9 @@ export class IamStack extends cdk.Stack {
         "dynamodb:Scan"
       ],
       resources: [
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clusterName}-bootstrap-lock`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clusterName}-etcd-members`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clusterName}-etcd-members/index/*`
+        `arn:aws:dynamodb:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:table/${clusterName}-bootstrap-lock`,
+        `arn:aws:dynamodb:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:table/${clusterName}-etcd-members`,
+        `arn:aws:dynamodb:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:table/${clusterName}-etcd-members/index/*`
       ]
     }));
   }
