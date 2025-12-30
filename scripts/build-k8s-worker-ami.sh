@@ -6,6 +6,12 @@ CONTAINERD_VERSION="1.7.11"
 RUNC_VERSION="1.1.10"
 CNI_VERSION="1.4.0"
 
+# Cleanup function
+cleanup() {
+    rm -f k8s-worker-ami.pkr.hcl install-k8s-worker.sh
+}
+trap cleanup EXIT
+
 # Create Packer template
 cat > k8s-worker-ami.pkr.hcl << 'EOF'
 packer {
@@ -20,7 +26,7 @@ packer {
 source "amazon-ebs" "k8s-worker" {
   ami_name      = "k8s-worker-node-{{timestamp}}"
   instance_type = "t3.medium"
-  region        = "us-west-2"
+  region        = "us-gov-west-1"
   source_ami_filter {
     filters = {
       name                = "al2023-ami-*-x86_64"
@@ -48,7 +54,7 @@ set -euo pipefail
 
 # Update system
 sudo dnf update -y
-sudo dnf install -y curl wget tar socat conntrack-tools
+sudo dnf install -y curl wget tar socat conntrack-tools --allowerasing
 
 # Disable swap
 sudo swapoff -a || true
@@ -123,7 +129,7 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
 EOL
 
-sudo dnf install -y kubelet-${K8S_VERSION} kubectl-${K8S_VERSION} --disableexcludes=kubernetes
+sudo dnf install -y kubelet-${K8S_VERSION} kubectl-${K8S_VERSION} --disableexcludes=kubernetes --allowerasing
 
 # Enable services
 sudo systemctl enable containerd
@@ -134,10 +140,18 @@ chmod +x install-k8s-worker.sh
 
 # Build AMI and capture ID
 echo "Building Kubernetes worker node AMI..."
-AMI_ID=$(packer build -machine-readable k8s-worker-ami.pkr.hcl | grep 'artifact,0,id' | cut -d, -f6 | cut -d: -f2)
+if ! packer build k8s-worker-ami.pkr.hcl; then
+    echo "ERROR: Packer build failed"
+    exit 1
+fi
 
-# Cleanup
-rm -f k8s-worker-ami.pkr.hcl install-k8s-worker.sh
+# Get the most recent AMI we created
+AMI_ID=$(aws ec2 describe-images --owners self --filters "Name=name,Values=k8s-worker-node-*" --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' --output text --region us-gov-west-1)
+
+if [[ "$AMI_ID" == "None" || -z "$AMI_ID" ]]; then
+    echo "ERROR: Could not find created AMI"
+    exit 1
+fi
 
 # Output AMI ID
 echo "$AMI_ID"
