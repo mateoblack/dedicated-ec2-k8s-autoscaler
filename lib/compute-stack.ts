@@ -33,6 +33,7 @@ export interface ComputeStackProps {
   readonly etcdMemberTable: dynamodb.Table;
   readonly oidcProviderArn: string;
   readonly oidcBucketName: string;
+  readonly etcdBackupBucketName: string;
 }
 
 export class ComputeStack extends Construct {
@@ -41,6 +42,7 @@ export class ComputeStack extends Construct {
   public readonly workerLaunchTemplate: ec2.LaunchTemplate;
   public readonly workerAutoScalingGroup: autoscaling.AutoScalingGroup;
   public readonly etcdLifecycleLambda: lambda.Function;
+  public readonly etcdBackupLambda: lambda.Function;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
     super(scope, id);
@@ -169,6 +171,68 @@ export class ComputeStack extends Construct {
       targets: [new targets.LambdaFunction(this.etcdLifecycleLambda)]
     });
 
+    // Lambda function for scheduled etcd backups
+    const etcdBackupRole = new iam.Role(this, 'EtcdBackupRole', {
+      roleName: `${props.clusterName}-etcd-backup-role`,
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ]
+    });
+
+    this.etcdBackupLambda = new lambda.Function(this, 'EtcdBackupLambda', {
+      functionName: `${props.clusterName}-etcd-backup`,
+      runtime: lambda.Runtime.PYTHON_3_11,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(this.createEtcdBackupLambdaCode(props.clusterName, props.etcdBackupBucketName)),
+      timeout: cdk.Duration.minutes(5),
+      role: etcdBackupRole,
+      environment: {
+        CLUSTER_NAME: props.clusterName,
+        BACKUP_BUCKET: props.etcdBackupBucketName,
+        REGION: cdk.Stack.of(this).region,
+        CONTROL_PLANE_ASG_NAME: `${props.clusterName}-control-plane`
+      }
+    });
+
+    // Grant backup Lambda permissions
+    etcdBackupRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'autoscaling:DescribeAutoScalingGroups',
+        'ec2:DescribeInstances'
+      ],
+      resources: ['*']
+    }));
+
+    etcdBackupRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'ssm:SendCommand',
+        'ssm:GetCommandInvocation'
+      ],
+      resources: ['*']
+    }));
+
+    etcdBackupRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        's3:PutObject',
+        's3:GetObject',
+        's3:ListBucket'
+      ],
+      resources: [
+        `arn:aws:s3:::${props.etcdBackupBucketName}`,
+        `arn:aws:s3:::${props.etcdBackupBucketName}/*`
+      ]
+    }));
+
+    props.kmsKey.grantEncryptDecrypt(etcdBackupRole);
+
+    // Scheduled rule to run backup every 6 hours
+    new events.Rule(this, 'EtcdBackupSchedule', {
+      ruleName: `${props.clusterName}-etcd-backup-schedule`,
+      schedule: events.Schedule.rate(cdk.Duration.hours(6)),
+      targets: [new targets.LambdaFunction(this.etcdBackupLambda)]
+    });
+
     // Worker node launch template
     const workerAmiId = ssm.StringParameter.valueFromLookup(this, '/k8s-cluster/worker-ami-id');
 
@@ -243,7 +307,14 @@ ssm = boto3.client('ssm')
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
 SSM_COMMAND_TIMEOUT = 60
+DRAIN_TIMEOUT = 120  # Timeout for node drain operation
 MIN_HEALTHY_NODES_FOR_REMOVAL = 2  # Need at least 2 healthy nodes to safely remove one
+
+class NodeDrainError(Exception):
+    """Raised when node drain fails"""
+    def __init__(self, message, is_retriable=True):
+        super().__init__(message)
+        self.is_retriable = is_retriable
 
 class EtcdRemovalError(Exception):
     """Raised when etcd member removal fails"""
@@ -309,7 +380,18 @@ def handler(event, context):
         # Check quorum safety before proceeding
         check_quorum_safety(instance_id)
 
-        # Attempt to remove etcd member with retries
+        # Get node name for drain operation (hostname from DynamoDB or derive from private IP)
+        node_name = member_info.get('Hostname') or private_ip
+
+        # Step 1: Drain the node (cordon + evict pods)
+        logger.info(f"Draining node {node_name} before removal...")
+        drain_success = drain_node_with_retry(node_name, instance_id)
+        if not drain_success:
+            logger.warning(f"Node drain failed for {node_name}, continuing with etcd removal anyway")
+            # We continue with etcd removal even if drain fails - better to remove the node
+            # than leave it in a partially drained state
+
+        # Step 2: Remove etcd member
         removal_success = remove_etcd_member_with_retry(
             etcd_member_id,
             private_ip,
@@ -412,6 +494,162 @@ def check_quorum_safety(terminating_instance_id):
             f"Only {healthy_count} healthy nodes remaining. "
             f"Need at least {MIN_HEALTHY_NODES_FOR_REMOVAL} to safely remove a member."
         )
+
+
+def drain_node_with_retry(node_name, terminating_instance_id):
+    """
+    Attempt to drain node with retries.
+    Returns True on success, False on failure.
+    """
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"Attempt {attempt}/{MAX_RETRIES} to drain node {node_name}")
+            drain_node(node_name, terminating_instance_id)
+            return True
+
+        except NodeDrainError as e:
+            last_error = e
+            logger.warning(f"Drain attempt {attempt} failed: {str(e)}")
+
+            if not e.is_retriable:
+                logger.error("Drain error is not retriable, giving up")
+                break
+
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+                logger.info(f"Waiting {delay}s before retry...")
+                time.sleep(delay)
+
+        except Exception as e:
+            last_error = e
+            logger.error(f"Unexpected error draining node on attempt {attempt}: {str(e)}")
+
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY_SECONDS)
+
+    logger.error(f"All {MAX_RETRIES} drain attempts failed. Last error: {str(last_error)}")
+    return False
+
+
+def drain_node(node_name, terminating_instance_id):
+    """
+    Drain a Kubernetes node using kubectl via SSM.
+    This cordons the node and evicts all pods gracefully.
+    """
+    logger.info(f"Draining node {node_name}")
+
+    # Find healthy control plane instance to execute kubectl on
+    healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
+
+    if not healthy_instances:
+        raise NodeDrainError("No healthy control plane instances available for drain", is_retriable=True)
+
+    target_instance = healthy_instances[0]
+    logger.info(f"Executing kubectl drain on instance {target_instance}")
+
+    # Execute kubectl drain via SSM
+    # --ignore-daemonsets: DaemonSets can't be evicted
+    # --delete-emptydir-data: Allow deletion of pods using emptyDir
+    # --force: Force drain even if there are standalone pods
+    # --grace-period=30: Give pods 30 seconds to terminate gracefully
+    # --timeout=90s: Total timeout for the drain operation
+    command = f\"\"\"
+    set -e
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+
+    # First check if the node exists
+    if ! kubectl get node {node_name} &>/dev/null; then
+        echo "Node {node_name} not found in cluster - may already be removed"
+        exit 0
+    fi
+
+    # Cordon the node first (prevent new pods from being scheduled)
+    echo "Cordoning node {node_name}..."
+    kubectl cordon {node_name} || true
+
+    # Drain the node (evict pods gracefully)
+    echo "Draining node {node_name}..."
+    kubectl drain {node_name} \\
+        --ignore-daemonsets \\
+        --delete-emptydir-data \\
+        --force \\
+        --grace-period=30 \\
+        --timeout=90s || {{
+            echo "Drain command returned non-zero, checking node status..."
+            # Check if node is already drained/cordoned
+            if kubectl get node {node_name} -o jsonpath='{{.spec.unschedulable}}' 2>/dev/null | grep -q "true"; then
+                echo "Node is cordoned, drain may have partially succeeded"
+                exit 0
+            fi
+            exit 1
+        }}
+
+    echo "Successfully drained node {node_name}"
+    \"\"\"
+
+    try:
+        response = ssm.send_command(
+            InstanceIds=[target_instance],
+            DocumentName='AWS-RunShellScript',
+            Parameters={{'commands': [command]}},
+            TimeoutSeconds=DRAIN_TIMEOUT
+        )
+        command_id = response['Command']['CommandId']
+        logger.info(f"SSM drain command sent: {command_id}")
+    except Exception as e:
+        raise NodeDrainError(f"Failed to send SSM drain command: {str(e)}", is_retriable=True)
+
+    # Wait for command completion
+    return wait_for_drain_command(command_id, target_instance)
+
+
+def wait_for_drain_command(command_id, instance_id):
+    """Wait for SSM drain command to complete"""
+    max_wait = DRAIN_TIMEOUT + 30
+    poll_interval = 5
+    elapsed = 0
+
+    while elapsed < max_wait:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        try:
+            result = ssm.get_command_invocation(
+                CommandId=command_id,
+                InstanceId=instance_id
+            )
+        except ssm.exceptions.InvocationDoesNotExist:
+            logger.info("Drain command invocation not ready yet...")
+            continue
+
+        status = result['Status']
+
+        if status == 'Success':
+            stdout = result.get('StandardOutputContent', '')
+            logger.info(f"Drain command succeeded: {stdout}")
+            return
+
+        elif status == 'InProgress' or status == 'Pending':
+            continue
+
+        elif status in ['Failed', 'Cancelled', 'TimedOut']:
+            stderr = result.get('StandardErrorContent', '')
+            stdout = result.get('StandardOutputContent', '')
+            error_msg = stderr or stdout or 'Unknown error'
+
+            # Check if node was not found (not an error)
+            if 'not found' in error_msg.lower() or 'not found' in stdout.lower():
+                logger.info("Node not found in cluster, treating as success")
+                return
+
+            raise NodeDrainError(
+                f"kubectl drain failed with status {status}: {error_msg}",
+                is_retriable=(status == 'TimedOut')
+            )
+
+    raise NodeDrainError("SSM drain command timed out waiting for response", is_retriable=True)
 
 
 def remove_etcd_member_with_retry(member_id, private_ip, terminating_instance_id):
@@ -999,6 +1237,228 @@ trap - EXIT
 BOOTSTRAP_STAGE="complete"
 
 echo "Worker node bootstrap completed successfully!"
+`;
+  }
+
+  private createEtcdBackupLambdaCode(clusterName: string, backupBucket: string): string {
+    return `
+import json
+import boto3
+import os
+import logging
+import time
+from datetime import datetime
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ec2 = boto3.client('ec2')
+autoscaling = boto3.client('autoscaling')
+ssm = boto3.client('ssm')
+s3 = boto3.client('s3')
+
+# Configuration
+SSM_COMMAND_TIMEOUT = 120
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 5
+
+class BackupError(Exception):
+    """Raised when backup fails"""
+    def __init__(self, message, is_retriable=True):
+        super().__init__(message)
+        self.is_retriable = is_retriable
+
+def handler(event, context):
+    """
+    Scheduled handler to create etcd snapshots and upload to S3.
+    Runs every 6 hours via EventBridge schedule.
+    """
+    try:
+        logger.info(f"Starting scheduled etcd backup for cluster {os.environ['CLUSTER_NAME']}")
+
+        # Find a healthy control plane instance
+        healthy_instances = get_healthy_control_plane_instances()
+
+        if not healthy_instances:
+            logger.error("No healthy control plane instances found for backup")
+            return {'statusCode': 500, 'body': 'No healthy instances'}
+
+        target_instance = healthy_instances[0]
+        logger.info(f"Using instance {target_instance} for backup")
+
+        # Create backup with retries
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                backup_key = create_etcd_backup(target_instance)
+                logger.info(f"Backup completed successfully: {backup_key}")
+                return {'statusCode': 200, 'body': f'Backup created: {backup_key}'}
+            except BackupError as e:
+                logger.warning(f"Backup attempt {attempt} failed: {str(e)}")
+                if not e.is_retriable or attempt == MAX_RETRIES:
+                    raise
+                time.sleep(RETRY_DELAY_SECONDS * attempt)
+
+    except Exception as e:
+        logger.error(f"Backup failed: {str(e)}", exc_info=True)
+        return {'statusCode': 500, 'body': f'Backup failed: {str(e)}'}
+
+
+def get_healthy_control_plane_instances():
+    """Get list of healthy control plane instances"""
+    asg_name = os.environ.get('CONTROL_PLANE_ASG_NAME')
+    if not asg_name:
+        logger.error("CONTROL_PLANE_ASG_NAME environment variable not set")
+        return []
+
+    try:
+        response = autoscaling.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[asg_name]
+        )
+
+        if not response['AutoScalingGroups']:
+            return []
+
+        asg = response['AutoScalingGroups'][0]
+        instance_ids = [
+            i['InstanceId'] for i in asg['Instances']
+            if i['LifecycleState'] == 'InService'
+        ]
+
+        if not instance_ids:
+            return []
+
+        # Verify instances are actually running
+        response = ec2.describe_instances(InstanceIds=instance_ids)
+
+        healthy_instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                if instance['State']['Name'] == 'running':
+                    healthy_instances.append(instance['InstanceId'])
+
+        logger.info(f"Found {len(healthy_instances)} healthy control plane instances")
+        return healthy_instances
+
+    except Exception as e:
+        logger.error(f"Error finding healthy instances: {str(e)}")
+        return []
+
+
+def create_etcd_backup(instance_id):
+    """
+    Create etcd snapshot via SSM and upload to S3.
+    Returns the S3 key of the backup.
+    """
+    cluster_name = os.environ['CLUSTER_NAME']
+    bucket_name = os.environ['BACKUP_BUCKET']
+    region = os.environ['REGION']
+    timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    backup_filename = f"etcd-snapshot-{timestamp}.db"
+    s3_key = f"{cluster_name}/{backup_filename}"
+
+    # Script to create snapshot and upload to S3
+    command = f\"\"\"
+set -e
+
+# Create snapshot directory
+BACKUP_DIR="/tmp/etcd-backup"
+mkdir -p $BACKUP_DIR
+SNAPSHOT_FILE="$BACKUP_DIR/{backup_filename}"
+
+# Export etcd environment
+export ETCDCTL_API=3
+export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
+export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt
+export ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt
+export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key
+
+# Check etcd health first
+echo "Checking etcd health..."
+if ! etcdctl endpoint health; then
+    echo "ERROR: etcd is not healthy"
+    exit 1
+fi
+
+# Create snapshot
+echo "Creating etcd snapshot..."
+etcdctl snapshot save "$SNAPSHOT_FILE"
+
+# Verify snapshot
+echo "Verifying snapshot..."
+etcdctl snapshot status "$SNAPSHOT_FILE" --write-out=table
+
+# Get snapshot size
+SNAPSHOT_SIZE=$(stat -c%s "$SNAPSHOT_FILE" 2>/dev/null || stat -f%z "$SNAPSHOT_FILE")
+echo "Snapshot size: $SNAPSHOT_SIZE bytes"
+
+# Upload to S3
+echo "Uploading to S3..."
+aws s3 cp "$SNAPSHOT_FILE" "s3://{bucket_name}/{s3_key}" --region {region}
+
+# Cleanup
+rm -f "$SNAPSHOT_FILE"
+
+echo "BACKUP_SUCCESS key={s3_key} size=$SNAPSHOT_SIZE"
+\"\"\"
+
+    try:
+        response = ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName='AWS-RunShellScript',
+            Parameters={{'commands': [command]}},
+            TimeoutSeconds=SSM_COMMAND_TIMEOUT
+        )
+        command_id = response['Command']['CommandId']
+        logger.info(f"SSM backup command sent: {command_id}")
+    except Exception as e:
+        raise BackupError(f"Failed to send SSM command: {str(e)}", is_retriable=True)
+
+    # Wait for command completion
+    return wait_for_backup_command(command_id, instance_id, s3_key)
+
+
+def wait_for_backup_command(command_id, instance_id, s3_key):
+    """Wait for SSM backup command to complete"""
+    max_wait = SSM_COMMAND_TIMEOUT + 30
+    poll_interval = 5
+    elapsed = 0
+
+    while elapsed < max_wait:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        try:
+            result = ssm.get_command_invocation(
+                CommandId=command_id,
+                InstanceId=instance_id
+            )
+        except ssm.exceptions.InvocationDoesNotExist:
+            logger.info("Backup command invocation not ready yet...")
+            continue
+
+        status = result['Status']
+
+        if status == 'Success':
+            stdout = result.get('StandardOutputContent', '')
+            logger.info(f"Backup command succeeded: {stdout}")
+            # Extract backup info from output
+            if 'BACKUP_SUCCESS' in stdout:
+                return s3_key
+            raise BackupError("Backup command succeeded but no success marker found")
+
+        elif status == 'InProgress' or status == 'Pending':
+            continue
+
+        elif status in ['Failed', 'Cancelled', 'TimedOut']:
+            stderr = result.get('StandardErrorContent', '')
+            stdout = result.get('StandardOutputContent', '')
+            error_msg = stderr or stdout or 'Unknown error'
+            raise BackupError(
+                f"Backup command failed with status {status}: {error_msg}",
+                is_retriable=(status == 'TimedOut')
+            )
+
+    raise BackupError("SSM backup command timed out waiting for response", is_retriable=True)
 `;
   }
 

@@ -14,6 +14,7 @@ export class DatabaseStack extends Construct {
   public readonly etcdMemberTable: dynamodb.Table;
   public readonly bootstrapBucket: s3.Bucket;
   public readonly oidcBucket: s3.Bucket;
+  public readonly etcdBackupBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id);
@@ -109,6 +110,35 @@ export class DatabaseStack extends Construct {
       resources: [`${this.oidcBucket.bucketArn}/.well-known/*`, `${this.oidcBucket.bucketArn}/keys.json`],
       principals: [new cdk.aws_iam.AnyPrincipal()]
     }));
+
+    // S3 bucket for etcd backups
+    this.etcdBackupBucket = new s3.Bucket(this, "EtcdBackupBucket", {
+      bucketName: `${props.clusterName}-etcd-backup-${this.node.addr.slice(-8)}`,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: props.kmsKey,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      lifecycleRules: [
+        {
+          id: 'DeleteOldBackups',
+          enabled: true,
+          expiration: cdk.Duration.days(30), // Keep backups for 30 days
+        },
+        {
+          id: 'TransitionToInfrequentAccess',
+          enabled: true,
+          transitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: cdk.Duration.days(7) // Move to IA after 7 days
+            }
+          ]
+        }
+      ]
+    });
 
     // Note: Permissions are granted in the IAM stack to avoid circular dependencies
   }

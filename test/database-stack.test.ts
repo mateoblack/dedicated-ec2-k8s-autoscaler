@@ -27,6 +27,6 @@ test('Database stack creates S3 buckets', () => {
   });
   const template = Template.fromStack(stack);
 
-  // Bootstrap bucket (private, KMS encrypted) + OIDC bucket (public read for IRSA)
-  template.resourceCountIs('AWS::S3::Bucket', 2);
+  // Bootstrap bucket + OIDC bucket + etcd backup bucket
+  template.resourceCountIs('AWS::S3::Bucket', 3);
 });
