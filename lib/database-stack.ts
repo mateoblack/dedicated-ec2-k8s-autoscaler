@@ -89,8 +89,9 @@ export class DatabaseStack extends Construct {
 
     // S3 bucket for OIDC discovery documents (IRSA)
     // This bucket must allow public read for AWS STS to validate tokens
+    // Bucket name must be deterministic so IAM stack can construct the correct OIDC URL
     this.oidcBucket = new s3.Bucket(this, "OidcBucket", {
-      bucketName: `${props.clusterName}-oidc-${this.node.addr.slice(-8)}`,
+      bucketName: `${props.clusterName}-oidc-${cdk.Stack.of(this).account}`,
       encryption: s3.BucketEncryption.S3_MANAGED, // Use S3 managed encryption for public read compatibility
       blockPublicAccess: new s3.BlockPublicAccess({
         blockPublicAcls: true,

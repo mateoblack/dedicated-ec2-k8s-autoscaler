@@ -135,15 +135,16 @@ export class IamStack extends Construct {
     }));
 
     // Create OIDC Identity Provider for IRSA (self-managed cluster)
-    const clusterId = `${props.clusterName}-cluster`;
-    // For self-managed K8s, OIDC URL should point to the cluster's API server
-    // This will be configured during cluster bootstrap to point to the actual API server
-    const oidcUrl = `https://kubernetes.${props.clusterName}.local`; // Placeholder - will be updated during deployment
-    
+    // For self-managed K8s with S3-hosted OIDC discovery, the URL must match
+    // the --service-account-issuer used by the API server (set in compute-stack bootstrap)
+    const oidcBucketName = `${props.clusterName}-oidc-${cdk.Stack.of(this).account}`;
+    const oidcUrl = `https://s3.${cdk.Stack.of(this).region}.amazonaws.com/${oidcBucketName}`;
+
     this.oidcProvider = new iam.OpenIdConnectProvider(this, 'OIDCProvider', {
       url: oidcUrl,
       clientIds: ['sts.amazonaws.com'],
-      thumbprints: ['9e99a48a9960b14926bb7f3b02e22da2b0ab7280'] // Will need actual cluster CA thumbprint
+      // S3 TLS certificate thumbprint (Amazon Trust Services)
+      thumbprints: ['9e99a48a9960b14926bb7f3b02e22da2b0ab7280']
     });
 
     // Create IRSA role for cluster-autoscaler without conditions first
