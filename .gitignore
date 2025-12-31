@@ -3,3 +3,7 @@ node_modules
 cdk.out
 cdk.context.json
 bin/k8s-cluster.ts
+
+# Generated files
+**/*.d.ts
+**/*.js

@@ -53,12 +53,17 @@ export class K8sClusterStack extends cdk.Stack {
       controlPlaneSecurityGroup: this.networkStack.controlPlaneSecurityGroup,
       workerSecurityGroup: this.networkStack.workerSecurityGroup,
       controlPlaneLoadBalancer: this.networkStack.controlPlaneLoadBalancer,
+      controlPlaneTargetGroup: this.networkStack.controlPlaneTargetGroup,
       controlPlaneSubnets: this.networkStack.controlPlaneSubnets,
       workerSubnets: this.networkStack.vpc.selectSubnets({ subnetGroupName: 'DataPlane' }).subnets,
       vpc: this.networkStack.vpc,
       kubeletVersionParameter: this.servicesStack.kubeletVersionParameter,
       kubernetesVersionParameter: this.servicesStack.kubernetesVersionParameter,
       containerRuntimeParameter: this.servicesStack.containerRuntimeParameter,
+      clusterEndpointParameter: this.servicesStack.clusterEndpointParameter,
+      joinTokenParameter: this.servicesStack.joinTokenParameter,
+      clusterCaCertHashParameter: this.servicesStack.clusterCaCertHashParameter,
+      clusterInitializedParameter: this.servicesStack.clusterInitializedParameter,
       etcdMemberTable: this.databaseStack.etcdMemberTable,
     });
   }

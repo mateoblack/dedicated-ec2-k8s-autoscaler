@@ -19,12 +19,17 @@ export interface ComputeStackProps {
   readonly controlPlaneSecurityGroup: ec2.SecurityGroup;
   readonly workerSecurityGroup: ec2.SecurityGroup;
   readonly controlPlaneLoadBalancer: elbv2.NetworkLoadBalancer;
+  readonly controlPlaneTargetGroup: elbv2.NetworkTargetGroup;
   readonly controlPlaneSubnets: ec2.ISubnet[];
   readonly workerSubnets: ec2.ISubnet[];
   readonly vpc: ec2.IVpc;
   readonly kubeletVersionParameter: ssm.StringParameter;
   readonly kubernetesVersionParameter: ssm.StringParameter;
   readonly containerRuntimeParameter: ssm.StringParameter;
+  readonly clusterEndpointParameter: ssm.StringParameter;
+  readonly joinTokenParameter: ssm.StringParameter;
+  readonly clusterCaCertHashParameter: ssm.StringParameter;
+  readonly clusterInitializedParameter: ssm.StringParameter;
   readonly etcdMemberTable: dynamodb.Table;
 }
 
@@ -141,7 +146,7 @@ export class ComputeStack extends Construct {
     }));
 
     // Lifecycle hook for etcd member cleanup
-    const lifecycleHook = new autoscaling.LifecycleHook(this, 'EtcdLifecycleHook', {
+    new autoscaling.LifecycleHook(this, 'EtcdLifecycleHook', {
       autoScalingGroup: this.controlPlaneAutoScalingGroup,
       lifecycleTransition: autoscaling.LifecycleTransition.INSTANCE_TERMINATING,
       defaultResult: autoscaling.DefaultResult.CONTINUE,
@@ -164,11 +169,6 @@ export class ComputeStack extends Construct {
 
     // Worker node launch template
     const workerAmiId = ssm.StringParameter.valueFromLookup(this, '/k8s-cluster/worker-ami-id');
-    const workerConfigHash = cdk.Fn.join('', [
-      props.kubeletVersionParameter.parameterName,
-      props.kubernetesVersionParameter.parameterName,
-      props.containerRuntimeParameter.parameterName
-    ]);
 
     this.workerLaunchTemplate = new ec2.LaunchTemplate(this, 'WorkerLaunchTemplate', {
       launchTemplateName: `${props.clusterName}-worker`,
@@ -439,46 +439,48 @@ def complete_lifecycle_action(asg_name, hook_name, token, instance_id, result):
 
   private createWorkerBootstrapScript(clusterName: string): string {
     return `
-# Get SSM parameters
-KUBELET_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubelet/version" --query 'Parameter.Value' --output text --region ${cdk.Stack.of(this).region})
-KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region ${cdk.Stack.of(this).region})
-CONTAINER_RUNTIME=$(aws ssm get-parameter --name "/${clusterName}/container/runtime" --query 'Parameter.Value' --output text --region ${cdk.Stack.of(this).region})
+# Worker bootstrap script - Join cluster using pre-installed packages
+echo "Starting worker node bootstrap for cluster: ${clusterName}"
 
-# Download binaries with S3 fallback
-download_binary() {
-    local binary_name=$1
-    local version=$2
-    local s3_bucket="${clusterName}-bootstrap-${cdk.Stack.of(this).account}"
-    
-    # Try S3 first
-    if aws s3 cp "s3://$s3_bucket/binaries/$binary_name-$version" "/usr/local/bin/$binary_name" 2>/dev/null; then
-        echo "Downloaded $binary_name from S3"
-    else
-        echo "S3 download failed, trying public repository"
-        case $binary_name in
-            kubelet)
-                curl -L "https://dl.k8s.io/release/v$version/bin/linux/amd64/kubelet" -o "/usr/local/bin/kubelet"
-                ;;
-            kubectl)
-                curl -L "https://dl.k8s.io/release/v$version/bin/linux/amd64/kubectl" -o "/usr/local/bin/kubectl"
-                ;;
-        esac
+# Get instance metadata
+INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+REGION=${cdk.Stack.of(this).region}
+
+echo "Instance ID: $INSTANCE_ID"
+echo "Private IP: $PRIVATE_IP"
+
+# Wait for cluster to be initialized
+echo "Waiting for cluster to be initialized..."
+for i in {1..60}; do
+    CLUSTER_INITIALIZED=$(aws ssm get-parameter --name "/${clusterName}/cluster/initialized" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "false")
+    if [ "$CLUSTER_INITIALIZED" = "true" ]; then
+        echo "Cluster is initialized, proceeding with worker join"
+        break
     fi
-    chmod +x "/usr/local/bin/$binary_name"
-}
+    echo "Waiting for cluster initialization... ($i/60)"
+    sleep 10
+done
 
-# Install container runtime
-if [ "$CONTAINER_RUNTIME" = "containerd" ]; then
-    yum install -y containerd
-    systemctl enable containerd
-    systemctl start containerd
+if [ "$CLUSTER_INITIALIZED" != "true" ]; then
+    echo "Timeout waiting for cluster initialization"
+    exit 1
 fi
 
-# Download Kubernetes binaries
-download_binary "kubelet" "$KUBELET_VERSION"
-download_binary "kubectl" "$KUBERNETES_VERSION"
+# Get configuration from SSM parameters
+KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region $REGION)
+CLUSTER_ENDPOINT=$(aws ssm get-parameter --name "/${clusterName}/cluster/endpoint" --query 'Parameter.Value' --output text --region $REGION)
+JOIN_TOKEN=$(aws ssm get-parameter --name "/${clusterName}/cluster/join-token" --with-decryption --query 'Parameter.Value' --output text --region $REGION)
+CA_CERT_HASH=$(aws ssm get-parameter --name "/${clusterName}/cluster/ca-cert-hash" --query 'Parameter.Value' --output text --region $REGION)
 
-# Configure kubelet for worker node
+echo "Kubernetes Version: $KUBERNETES_VERSION"
+echo "Cluster Endpoint: $CLUSTER_ENDPOINT"
+
+# Configure containerd (already installed in AMI)
+systemctl enable containerd
+systemctl start containerd
+
+# Configure kubelet using pre-installed binary
 mkdir -p /etc/kubernetes/kubelet
 cat > /etc/kubernetes/kubelet/kubelet-config.yaml << 'EOF'
 kind: KubeletConfiguration
@@ -507,9 +509,10 @@ kubeReserved:
 systemReserved:
   cpu: 100m
   memory: 128Mi
+maxPods: 110
 EOF
 
-# Create kubelet systemd service
+# Create kubelet systemd service using pre-installed binary
 cat > /etc/systemd/system/kubelet.service << 'EOF'
 [Unit]
 Description=kubelet: The Kubernetes Node Agent
@@ -518,7 +521,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/kubelet \\
+ExecStart=/usr/bin/kubelet \\
   --config=/etc/kubernetes/kubelet/kubelet-config.yaml \\
   --container-runtime-endpoint=unix:///run/containerd/containerd.sock \\
   --kubeconfig=/etc/kubernetes/kubelet.conf \\
@@ -532,40 +535,250 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# Enable kubelet (will start after joining cluster)
+# Enable kubelet service
 systemctl daemon-reload
 systemctl enable kubelet
 
-echo "Worker node bootstrap completed"
+# Join cluster using pre-installed kubeadm
+if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ]; then
+    echo "Joining cluster using kubeadm..."
+    kubeadm join $CLUSTER_ENDPOINT \\
+        --token $JOIN_TOKEN \\
+        --discovery-token-ca-cert-hash $CA_CERT_HASH \\
+        --node-name $(hostname -f)
+    
+    if [ $? -eq 0 ]; then
+        echo "Successfully joined cluster as worker node"
+    else
+        echo "Failed to join cluster, falling back to kubelet bootstrap..."
+        
+        # Create bootstrap kubeconfig for kubelet
+        cat > /etc/kubernetes/bootstrap-kubelet.conf << EOF
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://$CLUSTER_ENDPOINT
+    insecure-skip-tls-verify: true
+  name: bootstrap
+contexts:
+- context:
+    cluster: bootstrap
+    user: kubelet-bootstrap
+  name: bootstrap
+current-context: bootstrap
+users:
+- name: kubelet-bootstrap
+  user:
+    token: $JOIN_TOKEN
+EOF
+        
+        # Start kubelet which will bootstrap and join the cluster
+        systemctl start kubelet
+    fi
+else
+    echo "Missing required join parameters from SSM"
+    exit 1
+fi
+
+echo "Worker node bootstrap completed successfully!"
 `;
   }
 
   private createControlPlaneBootstrapScript(clusterName: string): string {
     return `
-# Control plane bootstrap script
+# Control plane bootstrap script - Cluster initialization and joining
 echo "Starting control plane bootstrap for cluster: ${clusterName}"
 
-# Install required packages
-yum update -y
-yum install -y docker kubelet kubeadm kubectl
+# Get instance metadata
+INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+REGION=${cdk.Stack.of(this).region}
 
-# Configure Docker
-systemctl enable docker
-systemctl start docker
+# Get cluster configuration from SSM
+KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region $REGION)
+CLUSTER_ENDPOINT=$(aws ssm get-parameter --name "/${clusterName}/cluster/endpoint" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
+CLUSTER_INITIALIZED=$(aws ssm get-parameter --name "/${clusterName}/cluster/initialized" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "false")
 
-# Configure kubelet
+echo "Instance ID: $INSTANCE_ID"
+echo "Private IP: $PRIVATE_IP"
+echo "Kubernetes Version: $KUBERNETES_VERSION"
+echo "Cluster Initialized: $CLUSTER_INITIALIZED"
+
+# Configure containerd (already installed in AMI)
+systemctl enable containerd
+systemctl start containerd
+
+# Configure kubelet (already installed in AMI)
 systemctl enable kubelet
 
-# Initialize or join cluster
-if [ ! -f /etc/kubernetes/admin.conf ]; then
-  echo "Initializing Kubernetes cluster..."
-  kubeadm init --pod-network-cidr=10.244.0.0/16
-else
-  echo "Joining existing cluster..."
-  # Join logic would go here
+# Check if this should be the first control plane node
+if [ "$CLUSTER_INITIALIZED" = "false" ]; then
+    echo "Attempting to initialize cluster as first control plane node..."
+    
+    # Try to acquire cluster initialization lock using DynamoDB
+    if aws dynamodb put-item \\
+        --table-name "${clusterName}-etcd-members" \\
+        --item '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"cluster-init-lock"},"InstanceId":{"S":"'$INSTANCE_ID'"},"Status":{"S":"INITIALIZING"},"CreatedAt":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' \\
+        --condition-expression "attribute_not_exists(ClusterId)" \\
+        --region $REGION 2>/dev/null; then
+        
+        echo "Acquired initialization lock - initializing cluster..."
+        
+        # Initialize cluster with kubeadm
+        kubeadm init \\
+            --kubernetes-version=v$KUBERNETES_VERSION \\
+            --pod-network-cidr=10.244.0.0/16 \\
+            --service-cidr=10.96.0.0/12 \\
+            --apiserver-advertise-address=$PRIVATE_IP \\
+            --control-plane-endpoint="${clusterName}-cp-lb.internal:6443" \\
+            --upload-certs
+        
+        if [ $? -eq 0 ]; then
+            echo "Cluster initialization successful!"
+            
+            # Configure kubectl for root user
+            mkdir -p /root/.kube
+            cp -i /etc/kubernetes/admin.conf /root/.kube/config
+            chown root:root /root/.kube/config
+            
+            # Get join token and CA cert hash
+            JOIN_TOKEN=$(kubeadm token list | grep -v TOKEN | head -1 | awk '{print $1}')
+            CA_CERT_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
+            
+            # Store cluster information in SSM
+            aws ssm put-parameter --name "/${clusterName}/cluster/endpoint" --value "${clusterName}-cp-lb.internal:6443" --type "String" --overwrite --region $REGION
+            aws ssm put-parameter --name "/${clusterName}/cluster/join-token" --value "$JOIN_TOKEN" --type "SecureString" --overwrite --region $REGION
+            aws ssm put-parameter --name "/${clusterName}/cluster/ca-cert-hash" --value "sha256:$CA_CERT_HASH" --type "String" --overwrite --region $REGION
+            aws ssm put-parameter --name "/${clusterName}/cluster/initialized" --value "true" --type "String" --overwrite --region $REGION
+            
+            # Install CNI plugin (Cilium)
+            echo "Installing Cilium CNI plugin..."
+            kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.14.5/install/kubernetes/quick-install.yaml
+            
+            # Install cluster-autoscaler
+            echo "Installing cluster-autoscaler..."
+            cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+  labels:
+    app: cluster-autoscaler
+spec:
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: cluster-autoscaler
+    spec:
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.29.0
+        name: cluster-autoscaler
+        resources:
+          limits:
+            cpu: 100m
+            memory: 300Mi
+          requests:
+            cpu: 100m
+            memory: 300Mi
+        command:
+        - ./cluster-autoscaler
+        - --v=4
+        - --stderrthreshold=info
+        - --cloud-provider=aws
+        - --skip-nodes-with-local-storage=false
+        - --expander=least-waste
+        - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/${clusterName}
+        - --balance-similar-node-groups
+        - --skip-nodes-with-system-pods=false
+        env:
+        - name: AWS_REGION
+          value: $REGION
+EOF
+            
+            # Register this instance with load balancer target group
+            aws elbv2 register-targets \\
+                --target-group-arn $(aws elbv2 describe-target-groups --names "${clusterName}-control-plane-tg" --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION) \\
+                --targets Id=$INSTANCE_ID,Port=6443 \\
+                --region $REGION
+            
+            echo "First control plane node setup completed successfully!"
+        else
+            echo "Cluster initialization failed!"
+            # Release the lock
+            aws dynamodb delete-item \\
+                --table-name "${clusterName}-etcd-members" \\
+                --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"cluster-init-lock"}}' \\
+                --region $REGION
+            exit 1
+        fi
+    else
+        echo "Another node is initializing the cluster, waiting..."
+        # Wait for cluster to be initialized by another node
+        for i in {1..30}; do
+            sleep 10
+            CLUSTER_INITIALIZED=$(aws ssm get-parameter --name "/${clusterName}/cluster/initialized" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "false")
+            if [ "$CLUSTER_INITIALIZED" = "true" ]; then
+                echo "Cluster has been initialized by another node"
+                break
+            fi
+            echo "Waiting for cluster initialization... ($i/30)"
+        done
+        
+        if [ "$CLUSTER_INITIALIZED" != "true" ]; then
+            echo "Timeout waiting for cluster initialization"
+            exit 1
+        fi
+    fi
 fi
 
-echo "Control plane bootstrap completed"
+# Join existing cluster as additional control plane node
+if [ "$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; then
+    echo "Joining existing cluster as additional control plane node..."
+    
+    # Get join information from SSM
+    JOIN_TOKEN=$(aws ssm get-parameter --name "/${clusterName}/cluster/join-token" --with-decryption --query 'Parameter.Value' --output text --region $REGION)
+    CA_CERT_HASH=$(aws ssm get-parameter --name "/${clusterName}/cluster/ca-cert-hash" --query 'Parameter.Value' --output text --region $REGION)
+    CLUSTER_ENDPOINT=$(aws ssm get-parameter --name "/${clusterName}/cluster/endpoint" --query 'Parameter.Value' --output text --region $REGION)
+    
+    if [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ] && [ -n "$CLUSTER_ENDPOINT" ]; then
+        # Join as control plane node
+        kubeadm join $CLUSTER_ENDPOINT \\
+            --token $JOIN_TOKEN \\
+            --discovery-token-ca-cert-hash $CA_CERT_HASH \\
+            --control-plane \\
+            --apiserver-advertise-address=$PRIVATE_IP
+        
+        if [ $? -eq 0 ]; then
+            echo "Successfully joined cluster as control plane node"
+            
+            # Configure kubectl for root user
+            mkdir -p /root/.kube
+            cp -i /etc/kubernetes/admin.conf /root/.kube/config
+            chown root:root /root/.kube/config
+            
+            # Register this instance with load balancer target group
+            aws elbv2 register-targets \\
+                --target-group-arn $(aws elbv2 describe-target-groups --names "${clusterName}-control-plane-tg" --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION) \\
+                --targets Id=$INSTANCE_ID,Port=6443 \\
+                --region $REGION
+        else
+            echo "Failed to join cluster as control plane node"
+            exit 1
+        fi
+    else
+        echo "Missing join information in SSM parameters"
+        exit 1
+    fi
+fi
+
+echo "Control plane bootstrap completed successfully!"
 `;
   }
 }

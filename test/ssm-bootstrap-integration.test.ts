@@ -7,17 +7,33 @@ describe('SSM Bootstrap Integration', () => {
     const { template } = createTestStack();
     
     template.hasResourceProperties('AWS::SSM::Parameter', {
-      Name: '/my-cluster/control/kubelet/version',
+      Name: '/my-cluster/kubernetes/version',
       Type: 'String'
     });
 
     template.hasResourceProperties('AWS::SSM::Parameter', {
-      Name: '/my-cluster/control/kubernetes/version',
+      Name: '/my-cluster/container/runtime',
+      Type: 'String'
+    });
+
+    // Check cluster communication parameters
+    template.hasResourceProperties('AWS::SSM::Parameter', {
+      Name: '/my-cluster/cluster/endpoint',
       Type: 'String'
     });
 
     template.hasResourceProperties('AWS::SSM::Parameter', {
-      Name: '/my-cluster/control/container/runtime',
+      Name: '/my-cluster/cluster/join-token',
+      Type: 'String'
+    });
+
+    template.hasResourceProperties('AWS::SSM::Parameter', {
+      Name: '/my-cluster/cluster/ca-cert-hash',
+      Type: 'String'
+    });
+
+    template.hasResourceProperties('AWS::SSM::Parameter', {
+      Name: '/my-cluster/cluster/initialized',
       Type: 'String'
     });
   });
