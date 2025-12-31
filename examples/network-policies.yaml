@@ -1,0 +1,183 @@
+# Default-Deny Network Policies for Kubernetes
+#
+# These policies implement a zero-trust network model where:
+# - All ingress traffic is denied by default
+# - All egress traffic is denied by default
+# - Explicit policies must be created to allow traffic
+#
+# IMPORTANT: Apply these policies per-namespace as needed.
+# Do NOT apply to kube-system without careful consideration.
+#
+# Usage:
+#   # Apply to a specific namespace
+#   kubectl apply -f network-policies.yaml -n my-namespace
+#
+#   # Or apply to all non-system namespaces
+#   for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -v '^kube-'); do
+#     kubectl apply -f network-policies.yaml -n $ns
+#   done
+
+---
+# Default deny all ingress traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Default deny all egress traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# Allow DNS egress (required for most workloads)
+# Apply this after default-deny-egress to allow DNS resolution
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# Allow egress to Kubernetes API server
+# Required for pods that need to communicate with the API server
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-egress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            # Allow access to API server endpoint
+            # The API server typically runs on the control plane nodes
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+
+---
+# Example: Allow ingress from same namespace only
+# Useful for service-to-service communication within a namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+
+---
+# Example: Allow egress to same namespace only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace-egress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector: {}
+
+---
+# Example: Allow ingress from ingress controller namespace
+# Adjust the namespace label to match your ingress controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+spec:
+  podSelector:
+    matchLabels:
+      # Apply to pods that need external access
+      app.kubernetes.io/expose: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              # Label your ingress namespace appropriately
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+
+---
+# Block access to cloud metadata service (169.254.169.254)
+# Prevents SSRF attacks and credential theft from compromised pods
+# IMPORTANT: Apply this to all namespaces including kube-system
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: block-metadata-service
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+
+---
+# Example: Allow specific app to talk to database
+# Template for application-specific policies
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: example-app-to-database
+spec:
+  podSelector:
+    matchLabels:
+      app: my-app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: my-database
+      ports:
+        - protocol: TCP
+          port: 5432  # PostgreSQL
+        # - port: 3306  # MySQL
+        # - port: 27017 # MongoDB

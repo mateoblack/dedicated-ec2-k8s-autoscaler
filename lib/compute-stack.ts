@@ -2123,7 +2123,51 @@ restore_from_backup() {
     # Use kubeadm init phase to set up control plane components
     # but skip etcd since we restored it
 
-    # First, create kubeadm config for restoration
+    # Ensure audit policy and log directory exist for restore case
+    mkdir -p /etc/kubernetes
+    mkdir -p /var/log/kubernetes/audit
+    cat > /etc/kubernetes/audit-policy.yaml << 'AUDITPOLICYRESTORE'
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - "RequestReceived"
+rules:
+  - level: None
+    nonResourceURLs:
+      - /healthz*
+      - /readyz*
+      - /livez*
+      - /metrics
+      - /openapi/*
+  - level: None
+    verbs: ["watch"]
+  - level: RequestResponse
+    nonResourceURLs:
+      - /apis/authentication.k8s.io/*
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps"]
+  - level: RequestResponse
+    verbs: ["create", "delete", "patch", "update"]
+    resources:
+      - group: ""
+        resources: ["namespaces", "serviceaccounts"]
+      - group: "rbac.authorization.k8s.io"
+        resources: ["*"]
+  - level: RequestResponse
+    verbs: ["create"]
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/attach", "pods/portforward"]
+  - level: Metadata
+    resources:
+      - group: ""
+      - group: "apps"
+      - group: "batch"
+AUDITPOLICYRESTORE
+
+    # First, create kubeadm config for restoration with audit logging
     cat > /tmp/kubeadm-restore-config.yaml << KUBEADMEOF
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
@@ -2146,6 +2190,20 @@ etcd:
 apiServer:
   extraArgs:
     service-account-issuer: https://s3.$REGION.amazonaws.com/${oidcBucketName}
+    audit-policy-file: /etc/kubernetes/audit-policy.yaml
+    audit-log-path: /var/log/kubernetes/audit/audit.log
+    audit-log-maxage: "30"
+    audit-log-maxbackup: "10"
+    audit-log-maxsize: "100"
+  extraVolumes:
+    - name: audit-policy
+      hostPath: /etc/kubernetes/audit-policy.yaml
+      mountPath: /etc/kubernetes/audit-policy.yaml
+      readOnly: true
+    - name: audit-logs
+      hostPath: /var/log/kubernetes/audit
+      mountPath: /var/log/kubernetes/audit
+      readOnly: false
 KUBEADMEOF
 
     # Run kubeadm init with the restored etcd
@@ -2273,18 +2331,133 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
         # This key allows additional control plane nodes to download certs
         CERT_KEY=$(kubeadm certs certificate-key)
 
-        # Initialize cluster with kubeadm
+        # Create audit policy for API server audit logging
+        # This policy logs security-relevant events while minimizing noise
+        mkdir -p /etc/kubernetes
+        mkdir -p /var/log/kubernetes/audit
+        cat > /etc/kubernetes/audit-policy.yaml << 'AUDITPOLICY'
+apiVersion: audit.k8s.io/v1
+kind: Policy
+# Don't log requests to these endpoints (high volume, low value)
+omitStages:
+  - "RequestReceived"
+rules:
+  # Don't log health checks and other high-volume endpoints
+  - level: None
+    nonResourceURLs:
+      - /healthz*
+      - /readyz*
+      - /livez*
+      - /metrics
+      - /openapi/*
+      - /api/v1/namespaces/kube-system/configmaps/kube-root-ca.crt
+
+  # Don't log watch requests (very high volume)
+  - level: None
+    verbs: ["watch"]
+
+  # Don't log node status updates from kubelet (high volume)
+  - level: None
+    users: ["system:node:*", "kubelet"]
+    verbs: ["patch", "update"]
+    resources:
+      - group: ""
+        resources: ["nodes/status"]
+
+  # Don't log endpoint updates (high volume from kube-proxy)
+  - level: None
+    users: ["system:kube-proxy"]
+    verbs: ["*"]
+    resources:
+      - group: ""
+        resources: ["endpoints", "endpointslices"]
+
+  # Log authentication failures at RequestResponse level
+  - level: RequestResponse
+    nonResourceURLs:
+      - /apis/authentication.k8s.io/*
+
+  # Log secret access at Metadata level (don't log contents)
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps"]
+
+  # Log all changes to cluster-critical resources at RequestResponse level
+  - level: RequestResponse
+    verbs: ["create", "delete", "patch", "update"]
+    resources:
+      - group: ""
+        resources: ["namespaces", "serviceaccounts"]
+      - group: "rbac.authorization.k8s.io"
+        resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+      - group: "networking.k8s.io"
+        resources: ["networkpolicies"]
+      - group: "policy"
+        resources: ["podsecuritypolicies"]
+
+  # Log pod exec/attach/portforward at RequestResponse level
+  - level: RequestResponse
+    verbs: ["create"]
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/attach", "pods/portforward"]
+
+  # Log everything else at Metadata level
+  - level: Metadata
+    resources:
+      - group: ""
+      - group: "apps"
+      - group: "batch"
+      - group: "extensions"
+      - group: "networking.k8s.io"
+AUDITPOLICY
+
+        echo "Created audit policy at /etc/kubernetes/audit-policy.yaml"
+
+        # Create kubeadm config file with audit logging enabled
+        cat > /tmp/kubeadm-init-config.yaml << KUBEADMCONFIG
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: $PRIVATE_IP
+  bindPort: 6443
+nodeRegistration:
+  name: $(hostname)
+certificateKey: $CERT_KEY
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: v$KUBERNETES_VERSION
+controlPlaneEndpoint: "${clusterName}-cp-lb.internal:6443"
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+apiServer:
+  extraArgs:
+    service-account-issuer: $OIDC_ISSUER
+    audit-policy-file: /etc/kubernetes/audit-policy.yaml
+    audit-log-path: /var/log/kubernetes/audit/audit.log
+    audit-log-maxage: "30"
+    audit-log-maxbackup: "10"
+    audit-log-maxsize: "100"
+  extraVolumes:
+    - name: audit-policy
+      hostPath: /etc/kubernetes/audit-policy.yaml
+      mountPath: /etc/kubernetes/audit-policy.yaml
+      readOnly: true
+    - name: audit-logs
+      hostPath: /var/log/kubernetes/audit
+      mountPath: /var/log/kubernetes/audit
+      readOnly: false
+KUBEADMCONFIG
+
+        # Initialize cluster with kubeadm using config file
         # The service-account-issuer must match the OIDC issuer URL for IRSA to work
         # --upload-certs uploads control plane certs to kubeadm-certs secret (encrypted with CERT_KEY)
         kubeadm init \\
-            --kubernetes-version=v$KUBERNETES_VERSION \\
-            --pod-network-cidr=10.244.0.0/16 \\
-            --service-cidr=10.96.0.0/12 \\
-            --apiserver-advertise-address=$PRIVATE_IP \\
-            --control-plane-endpoint="${clusterName}-cp-lb.internal:6443" \\
-            --service-account-issuer=$OIDC_ISSUER \\
-            --upload-certs \\
-            --certificate-key=$CERT_KEY
+            --config=/tmp/kubeadm-init-config.yaml \\
+            --upload-certs
         
         if [ $? -eq 0 ]; then
             echo "Cluster initialization successful!"

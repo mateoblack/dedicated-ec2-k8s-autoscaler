@@ -1,0 +1,111 @@
+# Pod Security Standards Configuration
+#
+# Kubernetes Pod Security Standards (PSS) provide three security levels:
+# - privileged: Unrestricted policy (default, no restrictions)
+# - baseline: Minimally restrictive, prevents known privilege escalations
+# - restricted: Heavily restricted, follows security best practices
+#
+# Pod Security Admission (PSA) enforces these standards at the namespace level
+# using labels. This file provides examples for configuring namespaces.
+#
+# Documentation: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+
+---
+# Example: Namespace with restricted pod security (recommended for production workloads)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production-workloads
+  labels:
+    # Enforce restricted policy - pods violating will be rejected
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    # Warn on baseline violations (for visibility during migration)
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    # Audit all violations (logged to audit log)
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+
+---
+# Example: Namespace with baseline pod security (good for most workloads)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: standard-workloads
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+
+---
+# Example: Namespace for system/privileged workloads (use sparingly)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: privileged-workloads
+  labels:
+    # Only use privileged for workloads that absolutely need it
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    # Still warn/audit on what would violate restricted
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+
+---
+# Example: Apply labels to an existing namespace
+# kubectl label namespace my-namespace \
+#   pod-security.kubernetes.io/enforce=baseline \
+#   pod-security.kubernetes.io/warn=restricted \
+#   pod-security.kubernetes.io/audit=restricted
+
+---
+# Example Pod that passes restricted policy
+apiVersion: v1
+kind: Pod
+metadata:
+  name: restricted-compliant-pod
+  namespace: production-workloads
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: nginx:alpine
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        limits:
+          memory: "128Mi"
+          cpu: "500m"
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache-nginx
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+  volumes:
+    - name: tmp
+      emptyDir: {}
+    - name: var-cache-nginx
+      emptyDir: {}
+    - name: var-run
+      emptyDir: {}

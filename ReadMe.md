@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (107 tests across 19 files):**
+**Test coverage (114 tests across 20 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -222,6 +222,7 @@ npm run test:code
 | `certificate-rotation.test.ts` | Automatic certificate rotation configuration |
 | `monitoring-stack.test.ts` | CloudWatch alarms and dashboard |
 | `ha-system-components.test.ts` | High availability for system components |
+| `audit-logging.test.ts` | API server audit logging configuration |
 
 ### Integration Tests (Requires AWS)
 
@@ -494,6 +495,42 @@ sudo journalctl -u containerd -f
 
 ---
 
+## Customer Responsibilities
+
+This project provides the core infrastructure for a self-managed Kubernetes cluster. The following items are **intentionally left to customers** to configure based on their specific requirements:
+
+### Security (Customer-Configured)
+
+| Item | Description | Example Provided |
+|------|-------------|------------------|
+| **Network Policies** | Default-deny policies, pod-to-pod restrictions | `examples/network-policies.yaml` |
+| **Pod Security Standards** | Namespace-level security restrictions | `examples/pod-security-standards.yaml` |
+| **Resource Quotas** | Namespace resource limits | No (workload-specific) |
+| **Egress Controls** | Outbound traffic restrictions | Included in network-policies.yaml |
+
+### Operations (Customer-Configured)
+
+| Item | Description | Notes |
+|------|-------------|-------|
+| **SNS Notifications** | Alert destinations for CloudWatch alarms | See CloudWatch Monitoring section |
+| **Cross-Region Backups** | Replicate etcd backups to another region | Use S3 replication rules |
+| **Upgrade Automation** | Kubernetes version upgrades | Recommend blue/green deployments |
+| **Custom Monitoring** | Application-specific metrics | Integrate with your observability stack |
+
+### Applying Security Examples
+
+```bash
+# Apply network policies to a namespace
+kubectl apply -f examples/network-policies.yaml -n my-namespace
+
+# Apply pod security labels to a namespace
+kubectl label namespace my-namespace \
+  pod-security.kubernetes.io/enforce=baseline \
+  pod-security.kubernetes.io/warn=restricted
+```
+
+---
+
 ## Status
 
 Active development under test phase, graduated from build
@@ -513,7 +550,8 @@ Key completed features:
 - ✅ CloudWatch alarms and dashboard for monitoring
 - ✅ HA system components (cluster-autoscaler, CSR-approver with 2 replicas)
 - ✅ Least privilege IAM policies (workers read-only, scoped resources)
-- ✅ Comprehensive test coverage (107 tests)
+- ✅ API server audit logging (security events logged to /var/log/kubernetes/audit)
+- ✅ Comprehensive test coverage (114 tests)
 
 In progress:
 - Testing of edge cases and failure scenarios 
