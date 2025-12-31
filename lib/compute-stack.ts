@@ -639,6 +639,38 @@ echo "Starting worker node bootstrap for cluster: ${clusterName}"
 MAX_RETRIES=5
 RETRY_DELAY=5
 
+# Track bootstrap state for cleanup
+BOOTSTRAP_STAGE="init"
+
+# Cleanup function for failed bootstrap
+cleanup_on_failure() {
+    local exit_code=\$?
+    if [ \$exit_code -eq 0 ]; then
+        return 0
+    fi
+
+    echo "Worker bootstrap failed at stage: \$BOOTSTRAP_STAGE (exit code: \$exit_code)"
+    echo "Running cleanup..."
+
+    # Reset kubeadm state
+    echo "Resetting kubeadm state..."
+    kubeadm reset -f 2>/dev/null || true
+
+    # Stop kubelet
+    systemctl stop kubelet 2>/dev/null || true
+
+    echo "Cleanup completed. Worker will need manual intervention or termination."
+
+    # Signal unhealthy to ASG (optional - causes replacement)
+    # Uncomment to auto-terminate failed instances:
+    # aws autoscaling set-instance-health --instance-id \$INSTANCE_ID --health-status Unhealthy --region \$REGION 2>/dev/null || true
+
+    exit \$exit_code
+}
+
+# Set trap for cleanup on error
+trap cleanup_on_failure EXIT
+
 # Retry helper that captures output
 retry_command_output() {
     local cmd="$1"
@@ -704,6 +736,8 @@ if [ "$CLUSTER_INITIALIZED" != "true" ]; then
     echo "Timeout waiting for cluster initialization"
     exit 1
 fi
+
+BOOTSTRAP_STAGE="get-join-params"
 
 # Function to request a fresh join token from a control plane node
 request_new_token() {
@@ -917,12 +951,15 @@ attempt_join() {
     return $?
 }
 
+BOOTSTRAP_STAGE="kubeadm-join"
+
 # Join cluster using pre-installed kubeadm
 if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ]; then
     echo "Joining cluster using kubeadm..."
 
     if attempt_join "$JOIN_TOKEN"; then
         echo "Successfully joined cluster as worker node"
+        BOOTSTRAP_STAGE="complete"
     else
         echo "First join attempt failed, requesting fresh token..."
 
@@ -938,6 +975,7 @@ if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ];
 
                 if attempt_join "$NEW_JOIN_TOKEN"; then
                     echo "Successfully joined cluster with fresh token"
+                    BOOTSTRAP_STAGE="complete"
                 else
                     echo "Join failed even with fresh token"
                     exit 1
@@ -956,6 +994,10 @@ else
     exit 1
 fi
 
+# Disable cleanup trap on successful completion
+trap - EXIT
+BOOTSTRAP_STAGE="complete"
+
 echo "Worker node bootstrap completed successfully!"
 `;
   }
@@ -968,6 +1010,91 @@ echo "Starting control plane bootstrap for cluster: ${clusterName}"
 # Retry configuration
 MAX_RETRIES=5
 RETRY_DELAY=5
+
+# Track bootstrap state for cleanup
+BOOTSTRAP_STAGE="init"
+ETCD_REGISTERED=false
+LB_REGISTERED=false
+CLUSTER_LOCK_HELD=false
+
+# Cleanup function for failed bootstrap
+cleanup_on_failure() {
+    local exit_code=\$?
+    if [ \$exit_code -eq 0 ]; then
+        return 0
+    fi
+
+    echo "Bootstrap failed at stage: \$BOOTSTRAP_STAGE (exit code: \$exit_code)"
+    echo "Running cleanup..."
+
+    # Remove from load balancer if registered
+    if [ "\$LB_REGISTERED" = "true" ]; then
+        echo "Removing from load balancer target group..."
+        TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION 2>/dev/null)
+        if [ -n "\$TARGET_GROUP_ARN" ] && [ "\$TARGET_GROUP_ARN" != "None" ]; then
+            aws elbv2 deregister-targets --target-group-arn "\$TARGET_GROUP_ARN" --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION 2>/dev/null || true
+        fi
+    fi
+
+    # Remove etcd member registration from DynamoDB if registered
+    if [ "\$ETCD_REGISTERED" = "true" ]; then
+        echo "Removing etcd member registration from DynamoDB..."
+        # We stored it with MemberId = etcd_member_id, need to find and delete
+        aws dynamodb query \
+            --table-name "${clusterName}-etcd-members" \
+            --index-name "InstanceIdIndex" \
+            --key-condition-expression "InstanceId = :iid" \
+            --expression-attribute-values '{":iid":{"S":"'\$INSTANCE_ID'"}}' \
+            --query 'Items[0]' \
+            --output json --region $REGION 2>/dev/null | \
+        python3 -c "
+import sys, json
+try:
+    item = json.load(sys.stdin)
+    if item:
+        print(item.get('ClusterId', {}).get('S', ''))
+        print(item.get('MemberId', {}).get('S', ''))
+except:
+    pass
+" | {
+            read cluster_id
+            read member_id
+            if [ -n "\$cluster_id" ] && [ -n "\$member_id" ]; then
+                aws dynamodb delete-item \
+                    --table-name "${clusterName}-etcd-members" \
+                    --key '{"ClusterId":{"S":"'\$cluster_id'"},"MemberId":{"S":"'\$member_id'"}}' \
+                    --region $REGION 2>/dev/null || true
+            fi
+        }
+    fi
+
+    # Release cluster init lock if we held it
+    if [ "\$CLUSTER_LOCK_HELD" = "true" ]; then
+        echo "Releasing cluster initialization lock..."
+        aws dynamodb delete-item \
+            --table-name "${clusterName}-etcd-members" \
+            --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"cluster-init-lock"}}' \
+            --region $REGION 2>/dev/null || true
+    fi
+
+    # Reset kubeadm state
+    echo "Resetting kubeadm state..."
+    kubeadm reset -f 2>/dev/null || true
+
+    # Stop kubelet
+    systemctl stop kubelet 2>/dev/null || true
+
+    echo "Cleanup completed. Instance will need manual intervention or termination."
+
+    # Signal unhealthy to ASG (optional - causes replacement)
+    # Uncomment to auto-terminate failed instances:
+    # aws autoscaling set-instance-health --instance-id \$INSTANCE_ID --health-status Unhealthy --region $REGION 2>/dev/null || true
+
+    exit \$exit_code
+}
+
+# Set trap for cleanup on error
+trap cleanup_on_failure EXIT
 
 # Retry helper function with exponential backoff
 # Usage: retry_command <command>
@@ -1164,21 +1291,30 @@ except:
 if [ "$CLUSTER_INITIALIZED" = "false" ]; then
     echo "Attempting to initialize cluster as first control plane node..."
     
+    BOOTSTRAP_STAGE="acquiring-lock"
+
     # Try to acquire cluster initialization lock using DynamoDB
     if aws dynamodb put-item \\
         --table-name "${clusterName}-etcd-members" \\
         --item '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"cluster-init-lock"},"InstanceId":{"S":"'$INSTANCE_ID'"},"Status":{"S":"INITIALIZING"},"CreatedAt":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' \\
         --condition-expression "attribute_not_exists(ClusterId)" \\
         --region $REGION 2>/dev/null; then
-        
+
+        CLUSTER_LOCK_HELD=true
+        BOOTSTRAP_STAGE="kubeadm-init"
         echo "Acquired initialization lock - initializing cluster..."
 
         # Set OIDC issuer URL for IRSA (before kubeadm init)
         OIDC_BUCKET="${oidcBucketName}"
         OIDC_ISSUER="https://s3.$REGION.amazonaws.com/$OIDC_BUCKET"
 
+        # Generate certificate key for control plane join (before kubeadm init)
+        # This key allows additional control plane nodes to download certs
+        CERT_KEY=$(kubeadm certs certificate-key)
+
         # Initialize cluster with kubeadm
         # The service-account-issuer must match the OIDC issuer URL for IRSA to work
+        # --upload-certs uploads control plane certs to kubeadm-certs secret (encrypted with CERT_KEY)
         kubeadm init \\
             --kubernetes-version=v$KUBERNETES_VERSION \\
             --pod-network-cidr=10.244.0.0/16 \\
@@ -1186,7 +1322,8 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
             --apiserver-advertise-address=$PRIVATE_IP \\
             --control-plane-endpoint="${clusterName}-cp-lb.internal:6443" \\
             --service-account-issuer=$OIDC_ISSUER \\
-            --upload-certs
+            --upload-certs \\
+            --certificate-key=$CERT_KEY
         
         if [ $? -eq 0 ]; then
             echo "Cluster initialization successful!"
@@ -1205,10 +1342,16 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
+            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
 
             # Register this node's etcd member in DynamoDB for lifecycle management
-            register_etcd_member || echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+            BOOTSTRAP_STAGE="etcd-registration"
+            if register_etcd_member; then
+                ETCD_REGISTERED=true
+            else
+                echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+            fi
 
             # Install CNI plugin (Cilium)
             echo "Installing Cilium CNI plugin..."
@@ -1348,12 +1491,19 @@ spec:
 EOF
 
             # Register this instance with load balancer target group (with retries)
+            BOOTSTRAP_STAGE="lb-registration"
             TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
             if [ -n "\$TARGET_GROUP_ARN" ]; then
-                retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+                if retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"; then
+                    LB_REGISTERED=true
+                fi
             else
                 echo "WARNING: Could not find target group ARN"
             fi
+
+            # Release the init lock since we're done
+            CLUSTER_LOCK_HELD=false
+            BOOTSTRAP_STAGE="complete"
 
             echo "First control plane node setup completed successfully!"
         else
@@ -1643,6 +1793,8 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
     }
 
     if [ -n "\$JOIN_TOKEN" ] && [ -n "\$CA_CERT_HASH" ] && [ -n "\$CLUSTER_ENDPOINT" ]; then
+        BOOTSTRAP_STAGE="kubeadm-join"
+
         # First attempt
         if attempt_control_plane_join "\$JOIN_TOKEN" "\$CERT_KEY"; then
             echo "Successfully joined cluster as control plane node"
@@ -1653,19 +1805,30 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
             chown root:root /root/.kube/config
 
             # Register this node's etcd member in DynamoDB for lifecycle management
-            register_etcd_member || echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+            BOOTSTRAP_STAGE="etcd-registration"
+            if register_etcd_member; then
+                ETCD_REGISTERED=true
+            else
+                echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+            fi
 
             # Register this instance with load balancer target group (with retries)
+            BOOTSTRAP_STAGE="lb-registration"
             TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
             if [ -n "\$TARGET_GROUP_ARN" ]; then
-                retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+                if retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"; then
+                    LB_REGISTERED=true
+                fi
             else
                 echo "WARNING: Could not find target group ARN"
             fi
+
+            BOOTSTRAP_STAGE="complete"
         else
             echo "First join attempt failed, requesting fresh token..."
 
             # Try to get a fresh token
+            BOOTSTRAP_STAGE="token-refresh"
             if request_new_control_plane_token; then
                 # Get the new token
                 NEW_JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
@@ -1676,6 +1839,7 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
                     # Reset kubeadm state before retry
                     kubeadm reset -f 2>/dev/null || true
 
+                    BOOTSTRAP_STAGE="kubeadm-join-retry"
                     if attempt_control_plane_join "\$NEW_JOIN_TOKEN" "\$NEW_CERT_KEY"; then
                         echo "Successfully joined cluster with fresh token"
 
@@ -1683,12 +1847,22 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
                         cp -i /etc/kubernetes/admin.conf /root/.kube/config
                         chown root:root /root/.kube/config
 
-                        register_etcd_member || echo "WARNING: Failed to register etcd member"
+                        BOOTSTRAP_STAGE="etcd-registration"
+                        if register_etcd_member; then
+                            ETCD_REGISTERED=true
+                        else
+                            echo "WARNING: Failed to register etcd member"
+                        fi
 
+                        BOOTSTRAP_STAGE="lb-registration"
                         TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
                         if [ -n "\$TARGET_GROUP_ARN" ]; then
-                            retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+                            if retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"; then
+                                LB_REGISTERED=true
+                            fi
                         fi
+
+                        BOOTSTRAP_STAGE="complete"
                     else
                         echo "Join failed even with fresh token"
                         exit 1
@@ -1707,6 +1881,10 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
         exit 1
     fi
 fi
+
+# Disable cleanup trap on successful completion
+trap - EXIT
+BOOTSTRAP_STAGE="complete"
 
 echo "Control plane bootstrap completed successfully!"
 `;
