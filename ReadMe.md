@@ -46,8 +46,11 @@ Ensure you have the following installed and configured:
 - **IMPORTANT:** Run this command from the `scripts/` directory:
   ```bash
   cd scripts/
-  ./build-k8s-ami-imagebuilder.sh
+  ./build-k8s-ami-imagebuilder.sh --region <your-region>
   ```
+- The `--region` parameter is **required** - the script will error if not provided
+- Supports both commercial AWS regions (e.g., `us-west-2`) and GovCloud regions (e.g., `us-gov-west-1`)
+- The script automatically detects the AWS partition based on the region
 - This creates pre-baked AMIs with Kubernetes packages (kubeadm, kubelet, kubectl, containerd)
 - AMI IDs are stored in SSM Parameter Store for the CDK deployment to reference
 

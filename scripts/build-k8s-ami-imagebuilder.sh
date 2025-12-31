@@ -1,15 +1,86 @@
 #!/bin/bash
 set -euo pipefail
 
+# =============================================================================
+# Kubernetes AMI Builder Script
+#
+# This script creates Kubernetes AMIs using AWS Image Builder.
+#
+# Usage:
+#   ./build-k8s-ami-imagebuilder.sh --region <aws-region>
+#
+# Example:
+#   ./build-k8s-ami-imagebuilder.sh --region us-west-2
+#   ./build-k8s-ami-imagebuilder.sh --region us-gov-west-1
+# =============================================================================
+
+# Parse command line arguments
+REGION=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --region)
+            REGION="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $0 --region <aws-region>"
+            echo ""
+            echo "Required arguments:"
+            echo "  --region    AWS region to build AMIs in (e.g., us-west-2, us-gov-west-1)"
+            echo ""
+            echo "Examples:"
+            echo "  $0 --region us-west-2"
+            echo "  $0 --region us-gov-west-1"
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required parameters
+if [[ -z "$REGION" ]]; then
+    echo "ERROR: --region is required"
+    echo ""
+    echo "Usage: $0 --region <aws-region>"
+    echo ""
+    echo "Examples:"
+    echo "  $0 --region us-west-2"
+    echo "  $0 --region us-gov-west-1"
+    exit 1
+fi
+
+# Determine AWS partition based on region
+# GovCloud regions use aws-us-gov partition
+if [[ "$REGION" == us-gov-* ]]; then
+    AWS_PARTITION="aws-us-gov"
+    CONSOLE_DOMAIN="console.amazonaws-us-gov.com"
+else
+    AWS_PARTITION="aws"
+    CONSOLE_DOMAIN="console.aws.amazon.com"
+fi
+
+echo "=============================================="
+echo "Kubernetes AMI Builder"
+echo "=============================================="
+echo "Region:    $REGION"
+echo "Partition: $AWS_PARTITION"
+echo "=============================================="
+echo ""
+
 # Function to check if instance profile is ready
 check_instance_profile() {
-    aws iam get-instance-profile --instance-profile-name EC2InstanceProfileForImageBuilder --region us-gov-west-1 >/dev/null 2>&1
+    aws iam get-instance-profile --instance-profile-name EC2InstanceProfileForImageBuilder --region "$REGION" >/dev/null 2>&1
 }
 
 # Check and create IAM role if it doesn't exist
 if ! check_instance_profile; then
     echo "Creating EC2InstanceProfileForImageBuilder..."
-    
+
     # Create IAM role
     aws iam create-role \
         --role-name EC2InstanceProfileForImageBuilder \
@@ -25,30 +96,30 @@ if ! check_instance_profile; then
                 }
             ]
         }' \
-        --region us-gov-west-1
-    
+        --region "$REGION"
+
     # Attach required policies
     aws iam attach-role-policy \
         --role-name EC2InstanceProfileForImageBuilder \
-        --policy-arn arn:aws-us-gov:iam::aws:policy/EC2InstanceProfileForImageBuilder \
-        --region us-gov-west-1
-    
+        --policy-arn "arn:${AWS_PARTITION}:iam::aws:policy/EC2InstanceProfileForImageBuilder" \
+        --region "$REGION"
+
     aws iam attach-role-policy \
         --role-name EC2InstanceProfileForImageBuilder \
-        --policy-arn arn:aws-us-gov:iam::aws:policy/AmazonSSMManagedInstanceCore \
-        --region us-gov-west-1
-    
+        --policy-arn "arn:${AWS_PARTITION}:iam::aws:policy/AmazonSSMManagedInstanceCore" \
+        --region "$REGION"
+
     # Create instance profile
     aws iam create-instance-profile \
         --instance-profile-name EC2InstanceProfileForImageBuilder \
-        --region us-gov-west-1
-    
+        --region "$REGION"
+
     # Add role to instance profile
     aws iam add-role-to-instance-profile \
         --instance-profile-name EC2InstanceProfileForImageBuilder \
         --role-name EC2InstanceProfileForImageBuilder \
-        --region us-gov-west-1
-    
+        --region "$REGION"
+
     # Wait for IAM role to propagate (retry for 15 minutes)
     echo "Waiting for IAM role to propagate..."
     for attempt in {1..15}; do
@@ -68,10 +139,10 @@ else
 fi
 
 # Get account ID once
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region us-gov-west-1)
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region "$REGION")
 
 # Create Image Builder component for Kubernetes control plane
-if ! aws imagebuilder get-component --component-build-version-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:${ACCOUNT_ID}:component/kubernetes-control-plane-1-29/1.29.0/1" --region us-gov-west-1 >/dev/null 2>&1; then
+if ! aws imagebuilder get-component --component-build-version-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:component/kubernetes-control-plane-1-29/1.29.0/1" --region "$REGION" >/dev/null 2>&1; then
     echo "Creating control plane component..."
     aws imagebuilder create-component \
       --name "kubernetes-control-plane-1-29" \
@@ -131,7 +202,7 @@ phases:
               Description=containerd container runtime
               Documentation=https://containerd.io
               After=network.target local-fs.target
-              
+
               [Service]
               ExecStartPre=-/sbin/modprobe overlay
               ExecStart=/usr/local/bin/containerd
@@ -145,7 +216,7 @@ phases:
               LimitNOFILE=infinity
               TasksMax=infinity
               OOMScoreAdjust=-999
-              
+
               [Install]
               WantedBy=multi-user.target
               EOF
@@ -179,13 +250,13 @@ phases:
             - ctr image pull quay.io/cilium/operator-generic:v1.14.5 || true
             - ctr image pull registry.k8s.io/autoscaling/cluster-autoscaler:v1.29.0 || true
             - kubeadm config images pull --kubernetes-version=1.29.0 || true' \
-      --region us-gov-west-1
+      --region "$REGION"
 else
     echo "Control plane component already exists"
 fi
 
 # Create worker component
-if ! aws imagebuilder get-component --component-build-version-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:${ACCOUNT_ID}:component/kubernetes-worker-1-29/1.29.0/1" --region us-gov-west-1 >/dev/null 2>&1; then
+if ! aws imagebuilder get-component --component-build-version-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:component/kubernetes-worker-1-29/1.29.0/1" --region "$REGION" >/dev/null 2>&1; then
     echo "Creating worker component..."
     aws imagebuilder create-component \
       --name "kubernetes-worker-1-29" \
@@ -245,7 +316,7 @@ phases:
               Description=containerd container runtime
               Documentation=https://containerd.io
               After=network.target local-fs.target
-              
+
               [Service]
               ExecStartPre=-/sbin/modprobe overlay
               ExecStart=/usr/local/bin/containerd
@@ -259,7 +330,7 @@ phases:
               LimitNOFILE=infinity
               TasksMax=infinity
               OOMScoreAdjust=-999
-              
+
               [Install]
               WantedBy=multi-user.target
               EOF
@@ -283,67 +354,67 @@ phases:
           commands:
             - systemctl enable containerd
             - systemctl enable kubelet' \
-      --region us-gov-west-1
+      --region "$REGION"
 else
     echo "Worker component already exists"
 fi
 
 # Create Image Builder recipes
-if ! aws imagebuilder get-image-recipe --image-recipe-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:${ACCOUNT_ID}:image-recipe/kubernetes-control-plane-recipe/1.29.0" --region us-gov-west-1 >/dev/null 2>&1; then
+if ! aws imagebuilder get-image-recipe --image-recipe-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-recipe/kubernetes-control-plane-recipe/1.29.0" --region "$REGION" >/dev/null 2>&1; then
     echo "Creating control plane recipe..."
     aws imagebuilder create-image-recipe \
       --name "kubernetes-control-plane-recipe" \
       --semantic-version "1.29.0" \
-      --parent-image "arn:aws-us-gov:imagebuilder:us-gov-west-1:aws:image/amazon-linux-2023-x86/x.x.x" \
-      --components '[{"componentArn":"arn:aws-us-gov:imagebuilder:us-gov-west-1:'${ACCOUNT_ID}':component/kubernetes-control-plane-1-29/1.29.0"}]' \
-      --region us-gov-west-1
+      --parent-image "arn:${AWS_PARTITION}:imagebuilder:${REGION}:aws:image/amazon-linux-2023-x86/x.x.x" \
+      --components "[{\"componentArn\":\"arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:component/kubernetes-control-plane-1-29/1.29.0\"}]" \
+      --region "$REGION"
 else
     echo "Control plane recipe already exists"
 fi
 
-if ! aws imagebuilder get-image-recipe --image-recipe-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:${ACCOUNT_ID}:image-recipe/kubernetes-worker-recipe/1.29.0" --region us-gov-west-1 >/dev/null 2>&1; then
+if ! aws imagebuilder get-image-recipe --image-recipe-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-recipe/kubernetes-worker-recipe/1.29.0" --region "$REGION" >/dev/null 2>&1; then
     echo "Creating worker recipe..."
     aws imagebuilder create-image-recipe \
       --name "kubernetes-worker-recipe" \
       --semantic-version "1.29.0" \
-      --parent-image "arn:aws-us-gov:imagebuilder:us-gov-west-1:aws:image/amazon-linux-2023-x86/x.x.x" \
-      --components '[{"componentArn":"arn:aws-us-gov:imagebuilder:us-gov-west-1:'${ACCOUNT_ID}':component/kubernetes-worker-1-29/1.29.0"}]' \
-      --region us-gov-west-1
+      --parent-image "arn:${AWS_PARTITION}:imagebuilder:${REGION}:aws:image/amazon-linux-2023-x86/x.x.x" \
+      --components "[{\"componentArn\":\"arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:component/kubernetes-worker-1-29/1.29.0\"}]" \
+      --region "$REGION"
 else
     echo "Worker recipe already exists"
 fi
 
 # Create infrastructure configuration
-if ! aws imagebuilder get-infrastructure-configuration --infrastructure-configuration-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:${ACCOUNT_ID}:infrastructure-configuration/k8s-infra-config" --region us-gov-west-1 >/dev/null 2>&1; then
+if ! aws imagebuilder get-infrastructure-configuration --infrastructure-configuration-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:infrastructure-configuration/k8s-infra-config" --region "$REGION" >/dev/null 2>&1; then
     echo "Creating infrastructure configuration..."
     aws imagebuilder create-infrastructure-configuration \
       --name "k8s-infra-config" \
       --instance-types "m5.large" \
       --instance-profile-name "EC2InstanceProfileForImageBuilder" \
-      --region us-gov-west-1
+      --region "$REGION"
 else
     echo "Infrastructure configuration already exists"
 fi
 
 # Create and run image pipelines
-if ! aws imagebuilder get-image-pipeline --image-pipeline-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:${ACCOUNT_ID}:image-pipeline/kubernetes-control-plane-pipeline" --region us-gov-west-1 >/dev/null 2>&1; then
+if ! aws imagebuilder get-image-pipeline --image-pipeline-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-pipeline/kubernetes-control-plane-pipeline" --region "$REGION" >/dev/null 2>&1; then
     echo "Creating control plane pipeline..."
     aws imagebuilder create-image-pipeline \
       --name "kubernetes-control-plane-pipeline" \
-      --image-recipe-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:"${ACCOUNT_ID}":image-recipe/kubernetes-control-plane-recipe/1.29.0" \
-      --infrastructure-configuration-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:"${ACCOUNT_ID}":infrastructure-configuration/k8s-infra-config" \
-      --region us-gov-west-1
+      --image-recipe-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-recipe/kubernetes-control-plane-recipe/1.29.0" \
+      --infrastructure-configuration-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:infrastructure-configuration/k8s-infra-config" \
+      --region "$REGION"
 else
     echo "Control plane pipeline already exists"
 fi
 
-if ! aws imagebuilder get-image-pipeline --image-pipeline-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:${ACCOUNT_ID}:image-pipeline/kubernetes-worker-pipeline" --region us-gov-west-1 >/dev/null 2>&1; then
+if ! aws imagebuilder get-image-pipeline --image-pipeline-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-pipeline/kubernetes-worker-pipeline" --region "$REGION" >/dev/null 2>&1; then
     echo "Creating worker pipeline..."
     aws imagebuilder create-image-pipeline \
       --name "kubernetes-worker-pipeline" \
-      --image-recipe-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:"${ACCOUNT_ID}":image-recipe/kubernetes-worker-recipe/1.29.0" \
-      --infrastructure-configuration-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:"${ACCOUNT_ID}":infrastructure-configuration/k8s-infra-config" \
-      --region us-gov-west-1
+      --image-recipe-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-recipe/kubernetes-worker-recipe/1.29.0" \
+      --infrastructure-configuration-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:infrastructure-configuration/k8s-infra-config" \
+      --region "$REGION"
 else
     echo "Worker pipeline already exists"
 fi
@@ -351,17 +422,17 @@ fi
 # Start both builds
 echo "Starting control plane AMI build..."
 aws imagebuilder start-image-pipeline-execution \
-  --image-pipeline-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:"${ACCOUNT_ID}":image-pipeline/kubernetes-control-plane-pipeline" \
-  --region us-gov-west-1
+  --image-pipeline-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-pipeline/kubernetes-control-plane-pipeline" \
+  --region "$REGION"
 
 echo "Starting worker AMI build..."
 aws imagebuilder start-image-pipeline-execution \
-  --image-pipeline-arn "arn:aws-us-gov:imagebuilder:us-gov-west-1:"${ACCOUNT_ID}":image-pipeline/kubernetes-worker-pipeline" \
-  --region us-gov-west-1
+  --image-pipeline-arn "arn:${AWS_PARTITION}:imagebuilder:${REGION}:${ACCOUNT_ID}:image-pipeline/kubernetes-worker-pipeline" \
+  --region "$REGION"
 
 echo ""
 echo "Both AMI builds started! Monitor progress in AWS Console:"
-echo "https://console.amazonaws-us-gov.com/imagebuilder/home?region=us-gov-west-1#/pipelines"
+echo "https://${CONSOLE_DOMAIN}/imagebuilder/home?region=${REGION}#/pipelines"
 
 # Function to get latest AMI ID from a pipeline
 get_latest_ami_id() {
@@ -370,7 +441,7 @@ get_latest_ami_id() {
         --filters "name=name,values=${pipeline_name}" \
         --query 'imageList | sort_by(@, &dateCreated) | [-1].outputResources.amis[0].image' \
         --output text \
-        --region us-gov-west-1
+        --region "$REGION"
 }
 
 # Wait for builds to complete and store AMI IDs in SSM
@@ -410,21 +481,25 @@ aws ssm put-parameter \
   --name "/k8s-cluster/control-plane-ami-id" \
   --value "$CONTROL_AMI" \
   --type "String" \
-  --region us-gov-west-1 \
+  --region "$REGION" \
   --overwrite
 
 aws ssm put-parameter \
   --name "/k8s-cluster/worker-ami-id" \
   --value "$WORKER_AMI" \
   --type "String" \
-  --region us-gov-west-1 \
+  --region "$REGION" \
   --overwrite
 
 echo ""
-echo "✅ Build complete!"
+echo "=============================================="
+echo "Build complete!"
+echo "=============================================="
+echo "Region:           $REGION"
 echo "Control Plane AMI: $CONTROL_AMI"
-echo "Worker AMI: $WORKER_AMI"
+echo "Worker AMI:        $WORKER_AMI"
 echo ""
 echo "AMI IDs stored in SSM:"
 echo "  /k8s-cluster/control-plane-ami-id = $CONTROL_AMI"
 echo "  /k8s-cluster/worker-ami-id = $WORKER_AMI"
+echo "=============================================="
