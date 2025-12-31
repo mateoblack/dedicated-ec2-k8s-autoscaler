@@ -44,6 +44,9 @@ export class K8sClusterStack extends cdk.Stack {
       kmsKey: this.iamStack.kmsKey
     });
 
+    // Grant control plane write access to OIDC bucket
+    this.databaseStack.oidcBucket.grantReadWrite(this.iamStack.controlPlaneRole);
+
     // Compute stack (launch templates, auto scaling groups)
     this.computeStack = new ComputeStack(this, 'Compute', {
       clusterName: props.clusterName,
@@ -65,6 +68,8 @@ export class K8sClusterStack extends cdk.Stack {
       clusterCaCertHashParameter: this.servicesStack.clusterCaCertHashParameter,
       clusterInitializedParameter: this.servicesStack.clusterInitializedParameter,
       etcdMemberTable: this.databaseStack.etcdMemberTable,
+      oidcProviderArn: this.iamStack.oidcProvider.openIdConnectProviderArn,
+      oidcBucketName: this.databaseStack.oidcBucket.bucketName,
     });
   }
 }

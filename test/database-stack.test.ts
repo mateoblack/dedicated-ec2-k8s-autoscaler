@@ -19,7 +19,7 @@ test('Database stack creates DynamoDB tables', () => {
   });
 });
 
-test('Database stack creates S3 bucket', () => {
+test('Database stack creates S3 buckets', () => {
   const app = new cdk.App();
   const stack = new K8sClusterStack(app, 'TestStack', {
     clusterName: 'test-cluster',
@@ -27,5 +27,6 @@ test('Database stack creates S3 bucket', () => {
   });
   const template = Template.fromStack(stack);
 
-  template.resourceCountIs('AWS::S3::Bucket', 1);
+  // Bootstrap bucket (private, KMS encrypted) + OIDC bucket (public read for IRSA)
+  template.resourceCountIs('AWS::S3::Bucket', 2);
 });

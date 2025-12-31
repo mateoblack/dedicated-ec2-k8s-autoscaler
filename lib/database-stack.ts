@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as kms from 'aws-cdk-lib/aws-kms';
-import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
 export interface DatabaseStackProps {
@@ -14,6 +13,7 @@ export class DatabaseStack extends Construct {
   public readonly bootstrapLockTable: dynamodb.Table;
   public readonly etcdMemberTable: dynamodb.Table;
   public readonly bootstrapBucket: s3.Bucket;
+  public readonly oidcBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id);
@@ -85,6 +85,30 @@ export class DatabaseStack extends Construct {
         noncurrentVersionExpiration: cdk.Duration.days(30)
       }]
     });
+
+    // S3 bucket for OIDC discovery documents (IRSA)
+    // This bucket must allow public read for AWS STS to validate tokens
+    this.oidcBucket = new s3.Bucket(this, "OidcBucket", {
+      bucketName: `${props.clusterName}-oidc-${this.node.addr.slice(-8)}`,
+      encryption: s3.BucketEncryption.S3_MANAGED, // Use S3 managed encryption for public read compatibility
+      blockPublicAccess: new s3.BlockPublicAccess({
+        blockPublicAcls: true,
+        ignorePublicAcls: true,
+        blockPublicPolicy: false, // Allow public bucket policy for OIDC discovery
+        restrictPublicBuckets: false
+      }),
+      versioned: false,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true
+    });
+
+    // Allow public read access to OIDC discovery documents
+    this.oidcBucket.addToResourcePolicy(new cdk.aws_iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [`${this.oidcBucket.bucketArn}/.well-known/*`, `${this.oidcBucket.bucketArn}/keys.json`],
+      principals: [new cdk.aws_iam.AnyPrincipal()]
+    }));
 
     // Note: Permissions are granted in the IAM stack to avoid circular dependencies
   }

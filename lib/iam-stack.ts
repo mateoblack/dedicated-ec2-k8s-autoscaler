@@ -159,6 +159,16 @@ export class IamStack extends Construct {
       ],
       resources: ['*']
     }));
+
+    // Control plane needs permission to update OIDC provider after cluster init
+    this.controlPlaneRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'iam:UpdateOpenIDConnectProviderThumbprint',
+        'iam:AddClientIDToOpenIDConnectProvider',
+        'iam:GetOpenIDConnectProvider'
+      ],
+      resources: [this.oidcProvider.openIdConnectProviderArn]
+    }));
   }
 
   private addSSMPermissions(role: iam.Role, clusterName: string) {

@@ -31,6 +31,8 @@ export interface ComputeStackProps {
   readonly clusterCaCertHashParameter: ssm.StringParameter;
   readonly clusterInitializedParameter: ssm.StringParameter;
   readonly etcdMemberTable: dynamodb.Table;
+  readonly oidcProviderArn: string;
+  readonly oidcBucketName: string;
 }
 
 export class ComputeStack extends Construct {
@@ -77,7 +79,7 @@ export class ComputeStack extends Construct {
 
     // Add control plane bootstrap script
     this.controlPlaneLaunchTemplate.userData?.addCommands(
-      this.createControlPlaneBootstrapScript(props.clusterName)
+      this.createControlPlaneBootstrapScript(props.clusterName, props.oidcProviderArn, props.oidcBucketName)
     );
 
     // Set dedicated tenancy and fix IMDS configuration
@@ -227,6 +229,7 @@ import boto3
 import os
 import logging
 import time
+from datetime import datetime
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -234,206 +237,396 @@ logger.setLevel(logging.INFO)
 dynamodb = boto3.resource('dynamodb')
 ec2 = boto3.client('ec2')
 autoscaling = boto3.client('autoscaling')
+ssm = boto3.client('ssm')
+
+# Configuration
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 5
+SSM_COMMAND_TIMEOUT = 60
+MIN_HEALTHY_NODES_FOR_REMOVAL = 2  # Need at least 2 healthy nodes to safely remove one
+
+class EtcdRemovalError(Exception):
+    """Raised when etcd member removal fails"""
+    def __init__(self, message, is_retriable=True):
+        super().__init__(message)
+        self.is_retriable = is_retriable
+
+class QuorumRiskError(Exception):
+    """Raised when removal would risk etcd quorum"""
+    pass
 
 def handler(event, context):
+    """
+    Handle EC2 instance termination lifecycle hook for etcd cluster management.
+
+    Ensures etcd member is safely removed before instance termination.
+    If removal fails, we ABANDON the termination to protect cluster quorum.
+    """
+    lifecycle_params = None
+
     try:
         logger.info(f"Received event: {json.dumps(event)}")
-        
+
         # Parse lifecycle hook event
         detail = event.get('detail', {})
-        instance_id = detail.get('EC2InstanceId')
-        lifecycle_hook_name = detail.get('LifecycleHookName')
-        auto_scaling_group_name = detail.get('AutoScalingGroupName')
-        lifecycle_action_token = detail.get('LifecycleActionToken')
-        
-        if not instance_id:
+        lifecycle_params = {
+            'instance_id': detail.get('EC2InstanceId'),
+            'hook_name': detail.get('LifecycleHookName'),
+            'asg_name': detail.get('AutoScalingGroupName'),
+            'token': detail.get('LifecycleActionToken')
+        }
+
+        if not lifecycle_params['instance_id']:
             logger.error("No instance ID found in event")
             return {'statusCode': 400, 'body': 'No instance ID'}
-        
+
+        instance_id = lifecycle_params['instance_id']
         logger.info(f"Processing termination for instance: {instance_id}")
-        
+
         # Get instance details
-        response = ec2.describe_instances(InstanceIds=[instance_id])
-        if not response['Reservations']:
-            logger.error(f"Instance {instance_id} not found")
-            complete_lifecycle_action(auto_scaling_group_name, lifecycle_hook_name, 
-                                    lifecycle_action_token, instance_id, 'CONTINUE')
-            return {'statusCode': 404, 'body': 'Instance not found'}
-        
-        instance = response['Reservations'][0]['Instances'][0]
-        private_ip = instance.get('PrivateIpAddress')
-        
+        instance_info = get_instance_info(instance_id)
+        if not instance_info:
+            logger.warning(f"Instance {instance_id} not found - may already be terminated")
+            complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            return {'statusCode': 200, 'body': 'Instance not found, continuing'}
+
+        private_ip = instance_info.get('PrivateIpAddress')
+
         # Look up etcd member in DynamoDB
-        table = dynamodb.Table(os.environ['ETCD_TABLE_NAME'])
-        
-        try:
-            # Query by instance ID using GSI
-            response = table.query(
-                IndexName='InstanceIdIndex',
-                KeyConditionExpression='InstanceId = :iid',
-                ExpressionAttributeValues={':iid': instance_id}
-            )
-            
-            if response['Items']:
-                member = response['Items'][0]
-                etcd_member_id = member.get('EtcdMemberId')
-                
-                if etcd_member_id:
-                    # Remove from etcd cluster
-                    remove_etcd_member(etcd_member_id, private_ip)
-                    
-                    # Update DynamoDB record
-                    table.update_item(
-                        Key={
-                            'ClusterId': member['ClusterId'],
-                            'MemberId': member['MemberId']
-                        },
-                        UpdateExpression='SET #status = :status, RemovedAt = :timestamp',
-                        ExpressionAttributeNames={'#status': 'Status'},
-                        ExpressionAttributeValues={
-                            ':status': 'REMOVED',
-                            ':timestamp': context.aws_request_id
-                        }
-                    )
-                    
-                    logger.info(f"Successfully removed etcd member {etcd_member_id}")
-                else:
-                    logger.warning(f"No etcd member ID found for instance {instance_id}")
-            else:
-                logger.warning(f"No etcd member record found for instance {instance_id}")
-        
-        except Exception as e:
-            logger.error(f"Error processing etcd member removal: {str(e)}")
-        
-        # Complete lifecycle action
-        complete_lifecycle_action(auto_scaling_group_name, lifecycle_hook_name, 
-                                lifecycle_action_token, instance_id, 'CONTINUE')
-        
-        return {'statusCode': 200, 'body': 'Success'}
-        
+        member_info = lookup_etcd_member(instance_id)
+
+        if not member_info:
+            logger.info(f"No etcd member record for instance {instance_id} - not a control plane node or already removed")
+            complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            return {'statusCode': 200, 'body': 'Not an etcd member, continuing'}
+
+        etcd_member_id = member_info.get('EtcdMemberId')
+        if not etcd_member_id:
+            logger.warning(f"Instance {instance_id} has member record but no EtcdMemberId")
+            complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            return {'statusCode': 200, 'body': 'No etcd member ID, continuing'}
+
+        # Check quorum safety before proceeding
+        check_quorum_safety(instance_id)
+
+        # Attempt to remove etcd member with retries
+        removal_success = remove_etcd_member_with_retry(
+            etcd_member_id,
+            private_ip,
+            instance_id
+        )
+
+        if removal_success:
+            # Update DynamoDB record
+            update_member_status(member_info, 'REMOVED', context.aws_request_id)
+            logger.info(f"Successfully removed etcd member {etcd_member_id}")
+            complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            return {'statusCode': 200, 'body': 'Success'}
+        else:
+            # Removal failed after all retries - ABANDON to protect cluster
+            logger.error(f"Failed to remove etcd member {etcd_member_id} after {MAX_RETRIES} attempts")
+            update_member_status(member_info, 'REMOVAL_FAILED', context.aws_request_id)
+            complete_lifecycle_action(lifecycle_params, 'ABANDON')
+            return {'statusCode': 500, 'body': 'etcd removal failed, abandoning termination'}
+
+    except QuorumRiskError as e:
+        logger.error(f"Quorum risk detected: {str(e)}")
+        if lifecycle_params:
+            complete_lifecycle_action(lifecycle_params, 'ABANDON')
+        return {'statusCode': 409, 'body': f'Quorum risk: {str(e)}'}
+
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        # On unexpected errors, ABANDON to be safe
+        if lifecycle_params:
+            complete_lifecycle_action(lifecycle_params, 'ABANDON')
         return {'statusCode': 500, 'body': f'Error: {str(e)}'}
 
-def remove_etcd_member(member_id, private_ip):
-    """Remove member from etcd cluster using etcdctl via SSM"""
+
+def get_instance_info(instance_id):
+    """Get EC2 instance details"""
     try:
-        logger.info(f"Removing etcd member {member_id} with IP {private_ip}")
-        
-        # Find healthy control plane instances to execute etcdctl on
-        healthy_instances = get_healthy_control_plane_instances()
-        
-        if not healthy_instances:
-            logger.error("No healthy control plane instances found")
-            raise Exception("No healthy control plane instances available")
-        
-        # Use the first healthy instance to execute etcdctl
-        target_instance = healthy_instances[0]
-        logger.info(f"Executing etcdctl on instance {target_instance}")
-        
-        # Execute etcdctl member remove via SSM
-        ssm = boto3.client('ssm')
-        
-        command = f"""
-        export ETCDCTL_API=3
-        export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
-        export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt
-        export ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt
-        export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key
-        
-        etcdctl member remove {member_id}
-        """
-        
+        response = ec2.describe_instances(InstanceIds=[instance_id])
+        if response['Reservations']:
+            return response['Reservations'][0]['Instances'][0]
+        return None
+    except ec2.exceptions.ClientError as e:
+        if 'InvalidInstanceID' in str(e):
+            return None
+        raise
+
+
+def lookup_etcd_member(instance_id):
+    """Look up etcd member info from DynamoDB"""
+    table = dynamodb.Table(os.environ['ETCD_TABLE_NAME'])
+
+    response = table.query(
+        IndexName='InstanceIdIndex',
+        KeyConditionExpression='InstanceId = :iid',
+        ExpressionAttributeValues={':iid': instance_id}
+    )
+
+    if response['Items']:
+        return response['Items'][0]
+    return None
+
+
+def update_member_status(member_info, status, request_id):
+    """Update etcd member status in DynamoDB"""
+    table = dynamodb.Table(os.environ['ETCD_TABLE_NAME'])
+
+    try:
+        table.update_item(
+            Key={
+                'ClusterId': member_info['ClusterId'],
+                'MemberId': member_info['MemberId']
+            },
+            UpdateExpression='SET #status = :status, UpdatedAt = :timestamp, RequestId = :rid',
+            ExpressionAttributeNames={'#status': 'Status'},
+            ExpressionAttributeValues={
+                ':status': status,
+                ':timestamp': datetime.utcnow().isoformat(),
+                ':rid': request_id
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to update member status: {str(e)}")
+        # Don't raise - status update failure shouldn't block the operation
+
+
+def check_quorum_safety(terminating_instance_id):
+    """
+    Check if removing this instance would risk etcd quorum.
+
+    etcd requires a majority (n/2 + 1) of members to be healthy.
+    For a 3-node cluster: need 2 healthy
+    For a 5-node cluster: need 3 healthy
+    """
+    healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
+    healthy_count = len(healthy_instances)
+
+    logger.info(f"Healthy control plane instances (excluding terminating): {healthy_count}")
+
+    if healthy_count < MIN_HEALTHY_NODES_FOR_REMOVAL:
+        raise QuorumRiskError(
+            f"Only {healthy_count} healthy nodes remaining. "
+            f"Need at least {MIN_HEALTHY_NODES_FOR_REMOVAL} to safely remove a member."
+        )
+
+
+def remove_etcd_member_with_retry(member_id, private_ip, terminating_instance_id):
+    """
+    Attempt to remove etcd member with retries and exponential backoff.
+    Returns True on success, False on failure.
+    """
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"Attempt {attempt}/{MAX_RETRIES} to remove etcd member {member_id}")
+            remove_etcd_member(member_id, private_ip, terminating_instance_id)
+            return True
+
+        except EtcdRemovalError as e:
+            last_error = e
+            logger.warning(f"Attempt {attempt} failed: {str(e)}")
+
+            if not e.is_retriable:
+                logger.error("Error is not retriable, giving up")
+                break
+
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAY_SECONDS * (2 ** (attempt - 1))  # Exponential backoff
+                logger.info(f"Waiting {delay}s before retry...")
+                time.sleep(delay)
+
+        except Exception as e:
+            last_error = e
+            logger.error(f"Unexpected error on attempt {attempt}: {str(e)}")
+
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY_SECONDS)
+
+    logger.error(f"All {MAX_RETRIES} attempts failed. Last error: {str(last_error)}")
+    return False
+
+
+def remove_etcd_member(member_id, private_ip, terminating_instance_id):
+    """Remove member from etcd cluster using etcdctl via SSM"""
+    logger.info(f"Removing etcd member {member_id} with IP {private_ip}")
+
+    # Find healthy control plane instance to execute etcdctl on
+    healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
+
+    if not healthy_instances:
+        raise EtcdRemovalError("No healthy control plane instances available", is_retriable=True)
+
+    target_instance = healthy_instances[0]
+    logger.info(f"Executing etcdctl on instance {target_instance}")
+
+    # Execute etcdctl member remove via SSM
+    command = f\"\"\"
+    set -e
+    export ETCDCTL_API=3
+    export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
+    export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt
+    export ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt
+    export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key
+
+    # Verify etcd is healthy before attempting removal
+    if ! etcdctl endpoint health; then
+        echo "ERROR: etcd endpoint not healthy"
+        exit 1
+    fi
+
+    # Check if member exists
+    if ! etcdctl member list | grep -q {member_id}; then
+        echo "Member {member_id} not found - may already be removed"
+        exit 0
+    fi
+
+    # Remove the member
+    etcdctl member remove {member_id}
+    echo "Successfully removed member {member_id}"
+    \"\"\"
+
+    try:
         response = ssm.send_command(
             InstanceIds=[target_instance],
             DocumentName='AWS-RunShellScript',
-            Parameters={
-                'commands': [command]
-            },
-            TimeoutSeconds=60
+            Parameters={'commands': [command]},
+            TimeoutSeconds=SSM_COMMAND_TIMEOUT
         )
-        
         command_id = response['Command']['CommandId']
         logger.info(f"SSM command sent: {command_id}")
-        
-        # Wait for command completion
-        import time
-        for _ in range(12):  # Wait up to 60 seconds
-            time.sleep(5)
+    except Exception as e:
+        raise EtcdRemovalError(f"Failed to send SSM command: {str(e)}", is_retriable=True)
+
+    # Wait for command completion
+    return wait_for_ssm_command(command_id, target_instance)
+
+
+def wait_for_ssm_command(command_id, instance_id):
+    """Wait for SSM command to complete and handle result"""
+    max_wait = SSM_COMMAND_TIMEOUT + 10
+    poll_interval = 3
+    elapsed = 0
+
+    while elapsed < max_wait:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        try:
             result = ssm.get_command_invocation(
                 CommandId=command_id,
-                InstanceId=target_instance
+                InstanceId=instance_id
             )
-            
-            status = result['Status']
-            if status == 'Success':
-                logger.info(f"Successfully removed etcd member {member_id}")
-                return
-            elif status in ['Failed', 'Cancelled', 'TimedOut']:
-                error_msg = result.get('StandardErrorContent', 'Unknown error')
-                logger.error(f"etcdctl command failed: {error_msg}")
-                raise Exception(f"etcdctl member remove failed: {error_msg}")
-        
-        raise Exception("etcdctl command timed out")
-        
-    except Exception as e:
-        logger.error(f"Failed to remove etcd member {member_id}: {str(e)}")
-        raise
+        except ssm.exceptions.InvocationDoesNotExist:
+            logger.info("Command invocation not ready yet...")
+            continue
 
-def get_healthy_control_plane_instances():
-    """Get list of healthy control plane instances"""
+        status = result['Status']
+
+        if status == 'Success':
+            stdout = result.get('StandardOutputContent', '')
+            logger.info(f"Command succeeded: {stdout}")
+            return
+
+        elif status == 'InProgress' or status == 'Pending':
+            continue
+
+        elif status in ['Failed', 'Cancelled', 'TimedOut']:
+            stderr = result.get('StandardErrorContent', '')
+            stdout = result.get('StandardOutputContent', '')
+            error_msg = stderr or stdout or 'Unknown error'
+
+            # Check if member was already removed (not an error)
+            if 'not found' in error_msg.lower() or 'already be removed' in stdout.lower():
+                logger.info("Member already removed, treating as success")
+                return
+
+            raise EtcdRemovalError(
+                f"etcdctl failed with status {status}: {error_msg}",
+                is_retriable=(status == 'TimedOut')
+            )
+
+    raise EtcdRemovalError("SSM command timed out waiting for response", is_retriable=True)
+
+
+def get_healthy_control_plane_instances(exclude_instance=None):
+    """Get list of healthy control plane instances, optionally excluding one"""
+    asg_name = os.environ.get('CONTROL_PLANE_ASG_NAME')
+    if not asg_name:
+        logger.error("CONTROL_PLANE_ASG_NAME environment variable not set")
+        return []
+
     try:
-        # Get all instances in the control plane ASG
-        asg_name = os.environ.get('CONTROL_PLANE_ASG_NAME')
-        if not asg_name:
-            logger.error("CONTROL_PLANE_ASG_NAME environment variable not set")
-            return []
-        
-        autoscaling = boto3.client('autoscaling')
         response = autoscaling.describe_auto_scaling_groups(
             AutoScalingGroupNames=[asg_name]
         )
-        
+
         if not response['AutoScalingGroups']:
             return []
-        
+
         asg = response['AutoScalingGroups'][0]
-        instance_ids = [i['InstanceId'] for i in asg['Instances'] 
-                       if i['LifecycleState'] == 'InService']
-        
+        instance_ids = [
+            i['InstanceId'] for i in asg['Instances']
+            if i['LifecycleState'] == 'InService' and i['InstanceId'] != exclude_instance
+        ]
+
         if not instance_ids:
             return []
-        
-        # Check instance health via EC2
-        ec2 = boto3.client('ec2')
+
+        # Verify instances are actually running
         response = ec2.describe_instances(InstanceIds=instance_ids)
-        
+
         healthy_instances = []
         for reservation in response['Reservations']:
             for instance in reservation['Instances']:
                 if instance['State']['Name'] == 'running':
                     healthy_instances.append(instance['InstanceId'])
-        
+
         logger.info(f"Found {len(healthy_instances)} healthy control plane instances")
         return healthy_instances
-        
+
     except Exception as e:
         logger.error(f"Error finding healthy instances: {str(e)}")
         return []
 
-def complete_lifecycle_action(asg_name, hook_name, token, instance_id, result):
-    """Complete the lifecycle action"""
+
+def complete_lifecycle_action(params, result):
+    """
+    Complete the lifecycle action. This MUST succeed or the instance will hang.
+
+    Args:
+        params: Dict with asg_name, hook_name, token, instance_id
+        result: 'CONTINUE' to proceed with termination, 'ABANDON' to cancel
+    """
     try:
         autoscaling.complete_lifecycle_action(
-            LifecycleHookName=hook_name,
-            AutoScalingGroupName=asg_name,
-            LifecycleActionToken=token,
-            InstanceId=instance_id,
+            LifecycleHookName=params['hook_name'],
+            AutoScalingGroupName=params['asg_name'],
+            LifecycleActionToken=params['token'],
+            InstanceId=params['instance_id'],
             LifecycleActionResult=result
         )
-        logger.info(f"Completed lifecycle action for {instance_id} with result {result}")
+        logger.info(f"Completed lifecycle action for {params['instance_id']} with result {result}")
     except Exception as e:
-        logger.error(f"Failed to complete lifecycle action: {str(e)}")
+        # This is critical - if we can't complete the action, the instance hangs
+        logger.error(f"CRITICAL: Failed to complete lifecycle action: {str(e)}")
+
+        # Try one more time with just instance ID (without token)
+        try:
+            autoscaling.complete_lifecycle_action(
+                LifecycleHookName=params['hook_name'],
+                AutoScalingGroupName=params['asg_name'],
+                InstanceId=params['instance_id'],
+                LifecycleActionResult=result
+            )
+            logger.info(f"Completed lifecycle action on retry (without token)")
+        except Exception as e2:
+            logger.error(f"CRITICAL: Retry also failed: {str(e2)}")
+            # At this point, the instance will time out based on the lifecycle hook timeout
 `;
   }
 
@@ -585,7 +778,7 @@ echo "Worker node bootstrap completed successfully!"
 `;
   }
 
-  private createControlPlaneBootstrapScript(clusterName: string): string {
+  private createControlPlaneBootstrapScript(clusterName: string, oidcProviderArn: string, oidcBucketName: string): string {
     return `
 # Control plane bootstrap script - Cluster initialization and joining
 echo "Starting control plane bootstrap for cluster: ${clusterName}"
@@ -612,6 +805,105 @@ systemctl start containerd
 # Configure kubelet (already installed in AMI)
 systemctl enable kubelet
 
+# Function to register etcd member in DynamoDB for lifecycle management
+register_etcd_member() {
+    echo "Registering etcd member in DynamoDB..."
+
+    # Wait for etcd to be ready
+    local max_attempts=30
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if ETCDCTL_API=3 etcdctl \\
+            --endpoints=https://127.0.0.1:2379 \\
+            --cacert=/etc/kubernetes/pki/etcd/ca.crt \\
+            --cert=/etc/kubernetes/pki/etcd/server.crt \\
+            --key=/etc/kubernetes/pki/etcd/server.key \\
+            endpoint health &>/dev/null; then
+            echo "etcd is healthy"
+            break
+        fi
+        echo "Waiting for etcd to be ready... (attempt $attempt/$max_attempts)"
+        sleep 5
+        attempt=$((attempt + 1))
+    done
+
+    if [ $attempt -gt $max_attempts ]; then
+        echo "ERROR: etcd did not become healthy in time"
+        return 1
+    fi
+
+    # Get etcd member ID for this node
+    # The member name matches the hostname
+    local hostname=$(hostname)
+    local member_info=$(ETCDCTL_API=3 etcdctl \\
+        --endpoints=https://127.0.0.1:2379 \\
+        --cacert=/etc/kubernetes/pki/etcd/ca.crt \\
+        --cert=/etc/kubernetes/pki/etcd/server.crt \\
+        --key=/etc/kubernetes/pki/etcd/server.key \\
+        member list -w json 2>/dev/null)
+
+    if [ -z "$member_info" ]; then
+        echo "ERROR: Failed to get etcd member list"
+        return 1
+    fi
+
+    # Parse member ID - look for member with matching name or peerURL containing our IP
+    local etcd_member_id=$(echo "$member_info" | grep -o '"ID":[0-9]*' | head -1 | cut -d: -f2)
+
+    # Try to find by peer URL matching our IP
+    local member_by_ip=$(echo "$member_info" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for member in data.get('members', []):
+        for url in member.get('peerURLs', []):
+            if '$PRIVATE_IP' in url:
+                print(format(member['ID'], 'x'))
+                sys.exit(0)
+    # If not found by IP, try by name
+    for member in data.get('members', []):
+        if member.get('name') == '$hostname':
+            print(format(member['ID'], 'x'))
+            sys.exit(0)
+except:
+    pass
+" 2>/dev/null)
+
+    if [ -n "$member_by_ip" ]; then
+        etcd_member_id="$member_by_ip"
+    fi
+
+    if [ -z "$etcd_member_id" ]; then
+        echo "ERROR: Could not determine etcd member ID for this node"
+        return 1
+    fi
+
+    echo "Found etcd member ID: $etcd_member_id"
+
+    # Register in DynamoDB
+    aws dynamodb put-item \\
+        --table-name "${clusterName}-etcd-members" \\
+        --item '{
+            "ClusterId": {"S": "'${clusterName}'"},
+            "MemberId": {"S": "'$etcd_member_id'"},
+            "InstanceId": {"S": "'$INSTANCE_ID'"},
+            "PrivateIp": {"S": "'$PRIVATE_IP'"},
+            "EtcdMemberId": {"S": "'$etcd_member_id'"},
+            "Hostname": {"S": "'$hostname'"},
+            "Status": {"S": "ACTIVE"},
+            "CreatedAt": {"S": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}
+        }' \\
+        --region $REGION
+
+    if [ $? -eq 0 ]; then
+        echo "Successfully registered etcd member $etcd_member_id in DynamoDB"
+        return 0
+    else
+        echo "ERROR: Failed to register etcd member in DynamoDB"
+        return 1
+    fi
+}
+
 # Check if this should be the first control plane node
 if [ "$CLUSTER_INITIALIZED" = "false" ]; then
     echo "Attempting to initialize cluster as first control plane node..."
@@ -624,14 +916,20 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
         --region $REGION 2>/dev/null; then
         
         echo "Acquired initialization lock - initializing cluster..."
-        
+
+        # Set OIDC issuer URL for IRSA (before kubeadm init)
+        OIDC_BUCKET="${oidcBucketName}"
+        OIDC_ISSUER="https://s3.$REGION.amazonaws.com/$OIDC_BUCKET"
+
         # Initialize cluster with kubeadm
+        # The service-account-issuer must match the OIDC issuer URL for IRSA to work
         kubeadm init \\
             --kubernetes-version=v$KUBERNETES_VERSION \\
             --pod-network-cidr=10.244.0.0/16 \\
             --service-cidr=10.96.0.0/12 \\
             --apiserver-advertise-address=$PRIVATE_IP \\
             --control-plane-endpoint="${clusterName}-cp-lb.internal:6443" \\
+            --service-account-issuer=$OIDC_ISSUER \\
             --upload-certs
         
         if [ $? -eq 0 ]; then
@@ -651,11 +949,104 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
             aws ssm put-parameter --name "/${clusterName}/cluster/join-token" --value "$JOIN_TOKEN" --type "SecureString" --overwrite --region $REGION
             aws ssm put-parameter --name "/${clusterName}/cluster/ca-cert-hash" --value "sha256:$CA_CERT_HASH" --type "String" --overwrite --region $REGION
             aws ssm put-parameter --name "/${clusterName}/cluster/initialized" --value "true" --type "String" --overwrite --region $REGION
-            
+
+            # Register this node's etcd member in DynamoDB for lifecycle management
+            register_etcd_member || echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+
             # Install CNI plugin (Cilium)
             echo "Installing Cilium CNI plugin..."
             kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.14.5/install/kubernetes/quick-install.yaml
-            
+
+            # Setup OIDC for IRSA (IAM Roles for Service Accounts)
+            echo "Setting up OIDC discovery for IRSA..."
+            OIDC_PROVIDER_ARN="${oidcProviderArn}"
+            # OIDC_BUCKET and OIDC_ISSUER were set before kubeadm init
+
+            # Extract the service account signing key from the cluster
+            # The API server uses this key to sign ServiceAccount tokens
+            SA_SIGNING_KEY_FILE="/etc/kubernetes/pki/sa.pub"
+
+            if [ -f "$SA_SIGNING_KEY_FILE" ]; then
+                echo "Generating OIDC discovery documents..."
+
+                # Create OIDC discovery document
+                cat > /tmp/openid-configuration.json <<OIDCEOF
+{
+    "issuer": "$OIDC_ISSUER",
+    "jwks_uri": "$OIDC_ISSUER/keys.json",
+    "authorization_endpoint": "urn:kubernetes:programmatic_authorization",
+    "response_types_supported": ["id_token"],
+    "subject_types_supported": ["public"],
+    "id_token_signing_alg_values_supported": ["RS256"],
+    "claims_supported": ["sub", "iss"]
+}
+OIDCEOF
+
+                # Convert the SA public key to JWKS format
+                # Extract modulus and exponent from the RSA public key
+                SA_PUB_KEY=$(cat $SA_SIGNING_KEY_FILE)
+
+                # Use openssl to get the key components and convert to JWK
+                # Get the modulus (n) and exponent (e) in base64url format
+                MODULUS=$(openssl rsa -pubin -in $SA_SIGNING_KEY_FILE -modulus -noout 2>/dev/null | cut -d= -f2 | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
+
+                # RSA public exponent is typically 65537 (AQAB in base64url)
+                EXPONENT="AQAB"
+
+                # Generate key ID (kid) from the key fingerprint
+                KID=$(openssl rsa -pubin -in $SA_SIGNING_KEY_FILE -outform DER 2>/dev/null | openssl dgst -sha256 -binary | base64 -w0 | tr '+/' '-_' | tr -d '=' | cut -c1-16)
+
+                # Create JWKS document
+                cat > /tmp/keys.json <<JWKSEOF
+{
+    "keys": [
+        {
+            "kty": "RSA",
+            "alg": "RS256",
+            "use": "sig",
+            "kid": "$KID",
+            "n": "$MODULUS",
+            "e": "$EXPONENT"
+        }
+    ]
+}
+JWKSEOF
+
+                # Upload OIDC documents to S3
+                echo "Uploading OIDC discovery documents to S3..."
+                aws s3 cp /tmp/openid-configuration.json s3://$OIDC_BUCKET/.well-known/openid-configuration --content-type application/json --region $REGION
+                aws s3 cp /tmp/keys.json s3://$OIDC_BUCKET/keys.json --content-type application/json --region $REGION
+
+                # Get the S3 TLS certificate thumbprint for the AWS OIDC provider
+                # AWS S3 uses Amazon Trust Services certificates
+                # The thumbprint for s3.amazonaws.com is well-known
+                S3_THUMBPRINT="9e99a48a9960b14926bb7f3b02e22da2b0ab7280"
+
+                # For regional S3 endpoints, we need to get the actual thumbprint
+                S3_ENDPOINT="s3.$REGION.amazonaws.com"
+                ACTUAL_THUMBPRINT=$(echo | openssl s_client -servername $S3_ENDPOINT -connect $S3_ENDPOINT:443 2>/dev/null | openssl x509 -fingerprint -sha1 -noout | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+
+                if [ -n "$ACTUAL_THUMBPRINT" ]; then
+                    S3_THUMBPRINT=$ACTUAL_THUMBPRINT
+                fi
+
+                echo "S3 TLS Thumbprint: $S3_THUMBPRINT"
+
+                # Update the AWS OIDC provider with the correct thumbprint
+                echo "Updating AWS OIDC provider thumbprint..."
+                aws iam update-open-id-connect-provider-thumbprint \\
+                    --open-id-connect-provider-arn $OIDC_PROVIDER_ARN \\
+                    --thumbprint-list $S3_THUMBPRINT \\
+                    --region $REGION
+
+                # Store OIDC issuer URL in SSM for reference
+                aws ssm put-parameter --name "/${clusterName}/oidc/issuer" --value "$OIDC_ISSUER" --type "String" --overwrite --region $REGION
+
+                echo "OIDC setup completed successfully!"
+            else
+                echo "WARNING: Service account signing key not found. OIDC setup skipped."
+            fi
+
             # Install cluster-autoscaler
             echo "Installing cluster-autoscaler..."
             cat <<EOF | kubectl apply -f -
@@ -757,12 +1148,15 @@ if [ "$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; t
         
         if [ $? -eq 0 ]; then
             echo "Successfully joined cluster as control plane node"
-            
+
             # Configure kubectl for root user
             mkdir -p /root/.kube
             cp -i /etc/kubernetes/admin.conf /root/.kube/config
             chown root:root /root/.kube/config
-            
+
+            # Register this node's etcd member in DynamoDB for lifecycle management
+            register_etcd_member || echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+
             # Register this instance with load balancer target group
             aws elbv2 register-targets \\
                 --target-group-arn $(aws elbv2 describe-target-groups --names "${clusterName}-control-plane-tg" --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION) \\

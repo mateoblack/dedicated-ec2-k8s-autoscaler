@@ -191,6 +191,97 @@ The cluster uses a multi-stack architecture with clear separation of concerns:
 
 ---
 
+## Testing
+
+### Unit Tests (CDK Infrastructure)
+
+Run infrastructure tests without AWS credentials:
+
+```bash
+npm run test:code
+```
+
+**Test coverage (58 tests across 15 files):**
+
+| Test File | Coverage |
+|-----------|----------|
+| `ssm-control-plane-access.test.ts` | SSM Session Manager access to control plane nodes |
+| `control-plane-launch-template.test.ts` | Control plane EC2 configuration |
+| `worker-launch-template.test.ts` | Worker node EC2 configuration |
+| `iam-stack.test.ts` | IAM roles, KMS, and permissions |
+| `network-stack.test.ts` | VPC, subnets, and load balancer |
+| `database-stack.test.ts` | DynamoDB tables and S3 buckets |
+| `security-groups.test.ts` | Security group rules |
+| `etcd-lifecycle-management.test.ts` | Lambda and lifecycle hooks |
+| `irsa-support.test.ts` | OIDC provider for IAM Roles for Service Accounts |
+| `cluster-autoscaler-tags.test.ts` | ASG tags for cluster-autoscaler discovery |
+
+### Integration Tests (Requires AWS)
+
+Full CDK synth + tests (requires AWS credentials and SSM parameters):
+
+```bash
+npm test
+```
+
+### Smoke Tests (Post-Deployment)
+
+After deploying the cluster, run smoke tests to verify everything works:
+
+```bash
+./scripts/k8s_smoke_test/test_k8s.sh <cluster-name> [kubeconfig-path]
+```
+
+**Smoke tests verify:**
+- Cluster connectivity
+- Control plane nodes ready (3+)
+- Worker nodes ready (1+)
+- System pods running (apiserver, etcd, coredns)
+- CNI (Cilium) working
+- Pod creation and scheduling
+- DNS resolution
+- SSM parameters populated
+- IRSA/OIDC configuration
+- Cluster autoscaler deployed
+
+---
+
+## Cluster Management
+
+### Accessing Control Plane Nodes
+
+Control plane nodes are accessible via AWS Systems Manager Session Manager (no SSH required):
+
+```bash
+# List control plane instances
+aws ec2 describe-instances \
+  --filters "Name=tag:aws:autoscaling:groupName,Values=<cluster-name>-control-plane" \
+  --query 'Reservations[].Instances[].[InstanceId,PrivateIpAddress,State.Name]' \
+  --output table
+
+# Connect to a control plane node
+aws ssm start-session --target <instance-id>
+```
+
+**Why SSM instead of SSH:**
+- No need to manage SSH keys
+- No inbound security group rules required
+- All access is logged in CloudTrail
+- Works in private subnets without bastion hosts
+
+### Required VPC Endpoints for SSM
+
+The cluster automatically creates these VPC endpoints for SSM access in isolated environments:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `ssm` | Systems Manager API |
+| `ssmmessages` | Session Manager connections |
+| `ec2messages` | Run Command messaging |
+| `kms` | Encryption for SecureString parameters |
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
@@ -223,7 +314,7 @@ sudo journalctl -u containerd -f
 
 ---
 
-## Status 
+## Status
 
 Active development under test phase, graduated from build
 
@@ -233,8 +324,12 @@ Key completed features:
 - ✅ Self-healing control plane with etcd lifecycle management
 - ✅ CNI networking with Cilium
 - ✅ Cluster autoscaling support
-- ✅ Comprehensive test coverage
-- NOT DONE - Testing of edge cases and 
+- ✅ IRSA (IAM Roles for Service Accounts) via S3-hosted OIDC
+- ✅ SSM Session Manager access to control plane nodes
+- ✅ Comprehensive test coverage (58 tests)
+
+In progress:
+- Testing of edge cases and failure scenarios 
 
 ---
 
