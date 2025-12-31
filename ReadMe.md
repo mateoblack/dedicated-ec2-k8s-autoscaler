@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (149 tests across 21 files):**
+**Test coverage (194 tests across 22 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -218,6 +218,7 @@ npm run test:code
 | `security-groups.test.ts` | Security group rules |
 | `etcd-lifecycle-management.test.ts` | Lambda and lifecycle hooks |
 | `etcd-backup-lambda.test.ts` | Scheduled etcd backup Lambda, S3 upload, scheduling |
+| `cluster-health-lambda.test.ts` | Cluster health monitoring, restore triggering, recovery logic |
 | `irsa-support.test.ts` | OIDC provider for IAM Roles for Service Accounts |
 | `cluster-autoscaler-tags.test.ts` | ASG tags for cluster-autoscaler discovery |
 | `certificate-rotation.test.ts` | Automatic certificate rotation configuration |
