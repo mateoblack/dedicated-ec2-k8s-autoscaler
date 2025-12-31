@@ -705,11 +705,140 @@ if [ "$CLUSTER_INITIALIZED" != "true" ]; then
     exit 1
 fi
 
+# Function to request a fresh join token from a control plane node
+request_new_token() {
+    echo "Requesting new join token from control plane..."
+
+    # Find a healthy control plane instance
+    CONTROL_PLANE_INSTANCE=$(aws ec2 describe-instances \
+        --filters "Name=tag:aws:autoscaling:groupName,Values=${clusterName}-control-plane" \
+                  "Name=instance-state-name,Values=running" \
+        --query 'Reservations[0].Instances[0].InstanceId' \
+        --output text --region $REGION 2>/dev/null)
+
+    if [ -z "$CONTROL_PLANE_INSTANCE" ] || [ "$CONTROL_PLANE_INSTANCE" = "None" ]; then
+        echo "ERROR: No healthy control plane instance found"
+        return 1
+    fi
+
+    echo "Found control plane instance: $CONTROL_PLANE_INSTANCE"
+
+    # Create script to generate new token on control plane
+    local token_script='
+export KUBECONFIG=/etc/kubernetes/admin.conf
+NEW_TOKEN=$(kubeadm token create --ttl 24h 2>/dev/null)
+if [ -n "$NEW_TOKEN" ]; then
+    aws ssm put-parameter --name "/'${clusterName}'/cluster/join-token" \
+        --value "$NEW_TOKEN" --type "SecureString" --overwrite --region '$REGION'
+    aws ssm put-parameter --name "/'${clusterName}'/cluster/join-token-updated" \
+        --value "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type "String" --overwrite --region '$REGION'
+    echo "TOKEN_REFRESH_SUCCESS"
+else
+    echo "TOKEN_REFRESH_FAILED"
+fi
+'
+
+    # Execute via SSM Run Command
+    local command_id=$(aws ssm send-command \
+        --instance-ids "$CONTROL_PLANE_INSTANCE" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=[\"$token_script\"]" \
+        --query 'Command.CommandId' \
+        --output text --region $REGION 2>/dev/null)
+
+    if [ -z "$command_id" ] || [ "$command_id" = "None" ]; then
+        echo "ERROR: Failed to send SSM command"
+        return 1
+    fi
+
+    echo "SSM command sent: $command_id"
+
+    # Wait for command completion
+    local max_wait=60
+    local elapsed=0
+    while [ $elapsed -lt $max_wait ]; do
+        sleep 5
+        elapsed=$((elapsed + 5))
+
+        local status=$(aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$CONTROL_PLANE_INSTANCE" \
+            --query 'Status' --output text --region $REGION 2>/dev/null)
+
+        if [ "$status" = "Success" ]; then
+            local output=$(aws ssm get-command-invocation \
+                --command-id "$command_id" \
+                --instance-id "$CONTROL_PLANE_INSTANCE" \
+                --query 'StandardOutputContent' --output text --region $REGION 2>/dev/null)
+
+            if echo "$output" | grep -q "TOKEN_REFRESH_SUCCESS"; then
+                echo "Token refresh successful"
+                return 0
+            else
+                echo "Token refresh command did not succeed"
+                return 1
+            fi
+        elif [ "$status" = "Failed" ] || [ "$status" = "Cancelled" ] || [ "$status" = "TimedOut" ]; then
+            echo "SSM command failed with status: $status"
+            return 1
+        fi
+    done
+
+    echo "Timeout waiting for token refresh"
+    return 1
+}
+
+# Function to check if token is likely expired (older than 20 hours)
+check_token_age() {
+    local token_updated=$(aws ssm get-parameter \
+        --name "/${clusterName}/cluster/join-token-updated" \
+        --query 'Parameter.Value' --output text --region $REGION 2>/dev/null)
+
+    if [ -z "$token_updated" ] || [ "$token_updated" = "None" ]; then
+        # No timestamp, check when the token parameter was last modified
+        token_updated=$(aws ssm get-parameter \
+            --name "/${clusterName}/cluster/join-token" \
+            --query 'Parameter.LastModifiedDate' --output text --region $REGION 2>/dev/null)
+    fi
+
+    if [ -z "$token_updated" ] || [ "$token_updated" = "None" ]; then
+        echo "unknown"
+        return
+    fi
+
+    # Convert to epoch
+    local token_epoch=$(date -d "$token_updated" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "$token_updated" +%s 2>/dev/null)
+    local now_epoch=$(date +%s)
+
+    if [ -z "$token_epoch" ]; then
+        echo "unknown"
+        return
+    fi
+
+    local age_hours=$(( (now_epoch - token_epoch) / 3600 ))
+    echo "$age_hours"
+}
+
 # Get configuration from SSM parameters (with retries)
 KUBERNETES_VERSION=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION")
 CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION")
-JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
 CA_CERT_HASH=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION")
+
+# Check token age and refresh if needed
+TOKEN_AGE=$(check_token_age)
+echo "Join token age: $TOKEN_AGE hours"
+
+if [ "$TOKEN_AGE" != "unknown" ] && [ "$TOKEN_AGE" -ge 20 ]; then
+    echo "Token is $TOKEN_AGE hours old (near expiry), requesting refresh..."
+    if request_new_token; then
+        echo "Token refreshed successfully"
+    else
+        echo "WARNING: Token refresh failed, will try existing token"
+    fi
+fi
+
+# Get join token (might be freshly refreshed)
+JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
 
 echo "Kubernetes Version: $KUBERNETES_VERSION"
 echo "Cluster Endpoint: $CLUSTER_ENDPOINT"
@@ -777,42 +906,50 @@ EOF
 systemctl daemon-reload
 systemctl enable kubelet
 
+# Function to attempt cluster join
+attempt_join() {
+    local token="$1"
+    echo "Attempting to join cluster with token..."
+    kubeadm join $CLUSTER_ENDPOINT \
+        --token "$token" \
+        --discovery-token-ca-cert-hash $CA_CERT_HASH \
+        --node-name $(hostname -f)
+    return $?
+}
+
 # Join cluster using pre-installed kubeadm
 if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ]; then
     echo "Joining cluster using kubeadm..."
-    kubeadm join $CLUSTER_ENDPOINT \\
-        --token $JOIN_TOKEN \\
-        --discovery-token-ca-cert-hash $CA_CERT_HASH \\
-        --node-name $(hostname -f)
-    
-    if [ $? -eq 0 ]; then
+
+    if attempt_join "$JOIN_TOKEN"; then
         echo "Successfully joined cluster as worker node"
     else
-        echo "Failed to join cluster, falling back to kubelet bootstrap..."
-        
-        # Create bootstrap kubeconfig for kubelet
-        cat > /etc/kubernetes/bootstrap-kubelet.conf << EOF
-apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    server: https://$CLUSTER_ENDPOINT
-    insecure-skip-tls-verify: true
-  name: bootstrap
-contexts:
-- context:
-    cluster: bootstrap
-    user: kubelet-bootstrap
-  name: bootstrap
-current-context: bootstrap
-users:
-- name: kubelet-bootstrap
-  user:
-    token: $JOIN_TOKEN
-EOF
-        
-        # Start kubelet which will bootstrap and join the cluster
-        systemctl start kubelet
+        echo "First join attempt failed, requesting fresh token..."
+
+        # Try to get a fresh token
+        if request_new_token; then
+            # Get the new token
+            NEW_JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
+
+            if [ -n "$NEW_JOIN_TOKEN" ] && [ "$NEW_JOIN_TOKEN" != "$JOIN_TOKEN" ]; then
+                echo "Got fresh token, retrying join..."
+                # Reset kubeadm state before retry
+                kubeadm reset -f 2>/dev/null || true
+
+                if attempt_join "$NEW_JOIN_TOKEN"; then
+                    echo "Successfully joined cluster with fresh token"
+                else
+                    echo "Join failed even with fresh token"
+                    exit 1
+                fi
+            else
+                echo "Could not get a different token"
+                exit 1
+            fi
+        else
+            echo "Token refresh failed"
+            exit 1
+        fi
     fi
 else
     echo "Missing required join parameters from SSM"
@@ -1066,6 +1203,7 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
             # Store cluster information in SSM (with retries)
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"
+            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
 
@@ -1247,24 +1385,162 @@ EOF
     fi
 fi
 
+# Function to request a fresh join token from another control plane node
+request_new_control_plane_token() {
+    echo "Requesting new join token from existing control plane node..."
+
+    # Find a healthy control plane instance (not ourselves)
+    CONTROL_PLANE_INSTANCE=$(aws ec2 describe-instances \
+        --filters "Name=tag:aws:autoscaling:groupName,Values=${clusterName}-control-plane" \
+                  "Name=instance-state-name,Values=running" \
+        --query "Reservations[].Instances[?InstanceId!='\$INSTANCE_ID'].InstanceId | [0]" \
+        --output text --region $REGION 2>/dev/null)
+
+    if [ -z "\$CONTROL_PLANE_INSTANCE" ] || [ "\$CONTROL_PLANE_INSTANCE" = "None" ]; then
+        echo "ERROR: No other healthy control plane instance found"
+        return 1
+    fi
+
+    echo "Found control plane instance: \$CONTROL_PLANE_INSTANCE"
+
+    # Create script to generate new token on control plane (with certificate-key for control plane join)
+    local token_script='
+export KUBECONFIG=/etc/kubernetes/admin.conf
+NEW_TOKEN=$(kubeadm token create --ttl 24h 2>/dev/null)
+CERT_KEY=$(kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1)
+if [ -n "$NEW_TOKEN" ]; then
+    aws ssm put-parameter --name "/'${clusterName}'/cluster/join-token" \
+        --value "$NEW_TOKEN" --type "SecureString" --overwrite --region '$REGION'
+    aws ssm put-parameter --name "/'${clusterName}'/cluster/join-token-updated" \
+        --value "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type "String" --overwrite --region '$REGION'
+    if [ -n "$CERT_KEY" ]; then
+        aws ssm put-parameter --name "/'${clusterName}'/cluster/certificate-key" \
+            --value "$CERT_KEY" --type "SecureString" --overwrite --region '$REGION'
+    fi
+    echo "TOKEN_REFRESH_SUCCESS"
+else
+    echo "TOKEN_REFRESH_FAILED"
+fi
+'
+
+    # Execute via SSM Run Command
+    local command_id=$(aws ssm send-command \
+        --instance-ids "\$CONTROL_PLANE_INSTANCE" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=[\"\$token_script\"]" \
+        --query 'Command.CommandId' \
+        --output text --region $REGION 2>/dev/null)
+
+    if [ -z "\$command_id" ] || [ "\$command_id" = "None" ]; then
+        echo "ERROR: Failed to send SSM command"
+        return 1
+    fi
+
+    echo "SSM command sent: \$command_id"
+
+    # Wait for command completion
+    local max_wait=90
+    local elapsed=0
+    while [ \$elapsed -lt \$max_wait ]; do
+        sleep 5
+        elapsed=\$((elapsed + 5))
+
+        local status=$(aws ssm get-command-invocation \
+            --command-id "\$command_id" \
+            --instance-id "\$CONTROL_PLANE_INSTANCE" \
+            --query 'Status' --output text --region $REGION 2>/dev/null)
+
+        if [ "\$status" = "Success" ]; then
+            local output=$(aws ssm get-command-invocation \
+                --command-id "\$command_id" \
+                --instance-id "\$CONTROL_PLANE_INSTANCE" \
+                --query 'StandardOutputContent' --output text --region $REGION 2>/dev/null)
+
+            if echo "\$output" | grep -q "TOKEN_REFRESH_SUCCESS"; then
+                echo "Token refresh successful"
+                return 0
+            else
+                echo "Token refresh command did not succeed"
+                return 1
+            fi
+        elif [ "\$status" = "Failed" ] || [ "\$status" = "Cancelled" ] || [ "\$status" = "TimedOut" ]; then
+            echo "SSM command failed with status: \$status"
+            return 1
+        fi
+    done
+
+    echo "Timeout waiting for token refresh"
+    return 1
+}
+
+# Function to check if token is likely expired (older than 20 hours)
+check_control_plane_token_age() {
+    local token_updated=$(aws ssm get-parameter \
+        --name "/${clusterName}/cluster/join-token-updated" \
+        --query 'Parameter.Value' --output text --region $REGION 2>/dev/null)
+
+    if [ -z "\$token_updated" ] || [ "\$token_updated" = "None" ]; then
+        echo "unknown"
+        return
+    fi
+
+    # Convert to epoch (Linux date format)
+    local token_epoch=$(date -d "\$token_updated" +%s 2>/dev/null)
+    local now_epoch=$(date +%s)
+
+    if [ -z "\$token_epoch" ]; then
+        echo "unknown"
+        return
+    fi
+
+    local age_hours=\$(( (now_epoch - token_epoch) / 3600 ))
+    echo "\$age_hours"
+}
+
 # Join existing cluster as additional control plane node
 if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; then
     echo "Joining existing cluster as additional control plane node..."
+
+    # Check token age and refresh if needed
+    TOKEN_AGE=$(check_control_plane_token_age)
+    echo "Join token age: \$TOKEN_AGE hours"
+
+    if [ "\$TOKEN_AGE" != "unknown" ] && [ "\$TOKEN_AGE" -ge 20 ]; then
+        echo "Token is \$TOKEN_AGE hours old (near expiry), requesting refresh..."
+        request_new_control_plane_token || echo "WARNING: Token refresh failed, will try existing token"
+    fi
 
     # Get join information from SSM (with retries)
     JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
     CA_CERT_HASH=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION")
     CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION")
+    CERT_KEY=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION" || echo "")
+
+    # Function to attempt control plane join
+    attempt_control_plane_join() {
+        local token="\$1"
+        local cert_key="\$2"
+
+        if [ -n "\$cert_key" ]; then
+            kubeadm join \$CLUSTER_ENDPOINT \
+                --token "\$token" \
+                --discovery-token-ca-cert-hash \$CA_CERT_HASH \
+                --control-plane \
+                --certificate-key "\$cert_key" \
+                --apiserver-advertise-address=\$PRIVATE_IP
+        else
+            kubeadm join \$CLUSTER_ENDPOINT \
+                --token "\$token" \
+                --discovery-token-ca-cert-hash \$CA_CERT_HASH \
+                --control-plane \
+                --apiserver-advertise-address=\$PRIVATE_IP
+        fi
+        return \$?
+    }
 
     if [ -n "\$JOIN_TOKEN" ] && [ -n "\$CA_CERT_HASH" ] && [ -n "\$CLUSTER_ENDPOINT" ]; then
-        # Join as control plane node
-        kubeadm join $CLUSTER_ENDPOINT \\
-            --token $JOIN_TOKEN \\
-            --discovery-token-ca-cert-hash $CA_CERT_HASH \\
-            --control-plane \\
-            --apiserver-advertise-address=$PRIVATE_IP
-        
-        if [ $? -eq 0 ]; then
+        # First attempt
+        if attempt_control_plane_join "\$JOIN_TOKEN" "\$CERT_KEY"; then
             echo "Successfully joined cluster as control plane node"
 
             # Configure kubectl for root user
@@ -1283,8 +1559,44 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
                 echo "WARNING: Could not find target group ARN"
             fi
         else
-            echo "Failed to join cluster as control plane node"
-            exit 1
+            echo "First join attempt failed, requesting fresh token..."
+
+            # Try to get a fresh token
+            if request_new_control_plane_token; then
+                # Get the new token
+                NEW_JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
+                NEW_CERT_KEY=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION" || echo "")
+
+                if [ -n "\$NEW_JOIN_TOKEN" ]; then
+                    echo "Got fresh token, retrying join..."
+                    # Reset kubeadm state before retry
+                    kubeadm reset -f 2>/dev/null || true
+
+                    if attempt_control_plane_join "\$NEW_JOIN_TOKEN" "\$NEW_CERT_KEY"; then
+                        echo "Successfully joined cluster with fresh token"
+
+                        mkdir -p /root/.kube
+                        cp -i /etc/kubernetes/admin.conf /root/.kube/config
+                        chown root:root /root/.kube/config
+
+                        register_etcd_member || echo "WARNING: Failed to register etcd member"
+
+                        TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+                        if [ -n "\$TARGET_GROUP_ARN" ]; then
+                            retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+                        fi
+                    else
+                        echo "Join failed even with fresh token"
+                        exit 1
+                    fi
+                else
+                    echo "Could not get a new token"
+                    exit 1
+                fi
+            else
+                echo "Token refresh failed"
+                exit 1
+            fi
         fi
     else
         echo "Missing join information in SSM parameters"
