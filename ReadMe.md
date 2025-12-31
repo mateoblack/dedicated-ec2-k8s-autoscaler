@@ -201,7 +201,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (68 tests across 16 files):**
+**Test coverage (84 tests across 17 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -216,6 +216,7 @@ npm run test:code
 | `irsa-support.test.ts` | OIDC provider for IAM Roles for Service Accounts |
 | `cluster-autoscaler-tags.test.ts` | ASG tags for cluster-autoscaler discovery |
 | `certificate-rotation.test.ts` | Automatic certificate rotation configuration |
+| `monitoring-stack.test.ts` | CloudWatch alarms and dashboard |
 
 ### Integration Tests (Requires AWS)
 
@@ -399,6 +400,63 @@ kubectl get csr
 
 ---
 
+## CloudWatch Monitoring
+
+### Automatic Monitoring
+
+The cluster automatically creates CloudWatch alarms and a dashboard for operational visibility:
+
+**CloudWatch Dashboard:** `<cluster-name>-overview`
+- Control plane health (healthy/unhealthy hosts)
+- API server response time
+- ASG capacity (control plane and workers)
+- Lambda function invocations, errors, and duration
+- DynamoDB read/write capacity and throttling
+
+### Alarms Created
+
+| Alarm | Triggers When |
+|-------|---------------|
+| `<cluster>-control-plane-unhealthy-instances` | Control plane ASG has unhealthy instances |
+| `<cluster>-api-server-unhealthy` | NLB target group has unhealthy hosts |
+| `<cluster>-api-server-high-latency` | API server response time > 5 seconds |
+| `<cluster>-worker-capacity-issue` | Worker ASG desired capacity is 0 |
+| `<cluster>-etcd-lifecycle-lambda-errors` | etcd lifecycle Lambda errors |
+| `<cluster>-etcd-backup-lambda-errors` | etcd backup Lambda errors |
+| `<cluster>-health-check-lambda-errors` | Cluster health Lambda errors |
+| `<cluster>-etcd-lifecycle-lambda-duration` | Lambda duration approaching timeout |
+| `<cluster>-bootstrap-lock-throttled` | Bootstrap DynamoDB table throttled |
+| `<cluster>-etcd-members-throttled` | etcd members DynamoDB table throttled |
+
+### Configuring Notifications
+
+Alarms are created without notification actions by default. To receive alerts, add an SNS topic subscription to your alarms:
+
+```bash
+# Create SNS topic
+aws sns create-topic --name my-cluster-alerts
+
+# Subscribe email
+aws sns subscribe \
+  --topic-arn arn:aws:sns:us-west-2:123456789012:my-cluster-alerts \
+  --protocol email \
+  --notification-endpoint your@email.com
+
+# Add alarm action (repeat for each alarm)
+aws cloudwatch put-metric-alarm \
+  --alarm-name my-cluster-control-plane-unhealthy-instances \
+  --alarm-actions arn:aws:sns:us-west-2:123456789012:my-cluster-alerts
+```
+
+### Viewing the Dashboard
+
+```bash
+# Open dashboard in AWS Console
+echo "https://console.aws.amazon.com/cloudwatch/home?region=us-west-2#dashboards:name=<cluster-name>-overview"
+```
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
@@ -447,7 +505,8 @@ Key completed features:
 - ✅ Automatic etcd backups to S3 (every 6 hours)
 - ✅ Automatic disaster recovery from backups
 - ✅ Automatic certificate rotation (kubelet + control plane)
-- ✅ Comprehensive test coverage (68 tests)
+- ✅ CloudWatch alarms and dashboard for monitoring
+- ✅ Comprehensive test coverage (84 tests)
 
 In progress:
 - Testing of edge cases and failure scenarios 

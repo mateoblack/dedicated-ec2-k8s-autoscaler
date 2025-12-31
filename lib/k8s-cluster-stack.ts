@@ -6,6 +6,7 @@ import { NetworkStack } from './network-stack';
 import { IamStack } from './iam-stack';
 import { DatabaseStack } from './database-stack';
 import { ComputeStack } from './compute-stack';
+import { MonitoringStack } from './monitoring-stack';
 
 export interface K8sClusterStackProps extends cdk.StackProps {
   readonly clusterName: string;
@@ -18,6 +19,7 @@ export class K8sClusterStack extends cdk.Stack {
   public readonly iamStack: IamStack;
   public readonly databaseStack: DatabaseStack;
   public readonly computeStack: ComputeStack;
+  public readonly monitoringStack: MonitoringStack;
 
   constructor(scope: Construct, id: string, props: K8sClusterStackProps) {
     super(scope, id, props);
@@ -72,6 +74,20 @@ export class K8sClusterStack extends cdk.Stack {
       oidcProviderArn: this.iamStack.oidcProvider.openIdConnectProviderArn,
       oidcBucketName: this.databaseStack.oidcBucket.bucketName,
       etcdBackupBucketName: this.databaseStack.etcdBackupBucket.bucketName,
+    });
+
+    // Monitoring stack (CloudWatch alarms and dashboard)
+    this.monitoringStack = new MonitoringStack(this, 'Monitoring', {
+      clusterName: props.clusterName,
+      controlPlaneAutoScalingGroup: this.computeStack.controlPlaneAutoScalingGroup,
+      workerAutoScalingGroup: this.computeStack.workerAutoScalingGroup,
+      controlPlaneTargetGroup: this.networkStack.controlPlaneTargetGroup,
+      controlPlaneLoadBalancer: this.networkStack.controlPlaneLoadBalancer,
+      etcdLifecycleLambda: this.computeStack.etcdLifecycleLambda,
+      etcdBackupLambda: this.computeStack.etcdBackupLambda,
+      clusterHealthLambda: this.computeStack.clusterHealthLambda,
+      bootstrapLockTable: this.databaseStack.bootstrapLockTable,
+      etcdMemberTable: this.databaseStack.etcdMemberTable,
     });
   }
 }
