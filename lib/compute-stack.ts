@@ -2405,7 +2405,7 @@ JWKSEOF
                 echo "WARNING: Service account signing key not found. OIDC setup skipped."
             fi
 
-            # Install cluster-autoscaler
+            # Install cluster-autoscaler with HA configuration
             echo "Installing cluster-autoscaler..."
             cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
@@ -2419,13 +2419,29 @@ spec:
   selector:
     matchLabels:
       app: cluster-autoscaler
-  replicas: 1
+  replicas: 2
   template:
     metadata:
       labels:
         app: cluster-autoscaler
     spec:
       serviceAccountName: cluster-autoscaler
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: cluster-autoscaler
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
       containers:
       - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.29.0
         name: cluster-autoscaler
@@ -2446,9 +2462,21 @@ spec:
         - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/${clusterName}
         - --balance-similar-node-groups
         - --skip-nodes-with-system-pods=false
+        - --leader-elect=true
         env:
         - name: AWS_REGION
           value: $REGION
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
 EOF
 
             # Install kubelet CSR auto-approver for server certificates
@@ -2498,7 +2526,7 @@ metadata:
   labels:
     app: kubelet-csr-approver
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: kubelet-csr-approver
@@ -2508,6 +2536,15 @@ spec:
         app: kubelet-csr-approver
     spec:
       serviceAccountName: kubelet-csr-approver
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: kubelet-csr-approver
+              topologyKey: kubernetes.io/hostname
       tolerations:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists

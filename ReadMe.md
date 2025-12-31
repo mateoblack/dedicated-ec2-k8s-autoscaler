@@ -201,7 +201,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (84 tests across 17 files):**
+**Test coverage (90 tests across 18 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -217,6 +217,7 @@ npm run test:code
 | `cluster-autoscaler-tags.test.ts` | ASG tags for cluster-autoscaler discovery |
 | `certificate-rotation.test.ts` | Automatic certificate rotation configuration |
 | `monitoring-stack.test.ts` | CloudWatch alarms and dashboard |
+| `ha-system-components.test.ts` | High availability for system components |
 
 ### Integration Tests (Requires AWS)
 
@@ -506,7 +507,8 @@ Key completed features:
 - ✅ Automatic disaster recovery from backups
 - ✅ Automatic certificate rotation (kubelet + control plane)
 - ✅ CloudWatch alarms and dashboard for monitoring
-- ✅ Comprehensive test coverage (84 tests)
+- ✅ HA system components (cluster-autoscaler, CSR-approver with 2 replicas)
+- ✅ Comprehensive test coverage (90 tests)
 
 In progress:
 - Testing of edge cases and failure scenarios 
