@@ -18,54 +18,19 @@ AWS.
 ## Requirements 
 
 - AWS CDK v2
-- HashiCorp Packer
+- Image builder permissions 
 - Node.js 18+
 
 ## Deployment Steps
 
 ### 1. AMI Preparation (Internet-Connected Environment)
 
-This deployment uses a three-phase approach for air-gapped environments like GovCloud.
-
-**Phase 1:** Build Kubernetes AMI (Commercial AWS Region)
+**Step 1.1:** Build Kubernetes AMI 
 - **IMPORTANT:** Run these commands from the `scripts/` directory to avoid cluttering your project root:
   ```bash
   cd scripts/
-  CONTROL_AMI=$(./build-k8s-ami.sh)
-  WORKER_AMI=$(./build-k8s-worker-ami.sh)
+  build-k8s-ami-imagebuilder.sh
   ```
-- Scripts use Packer to create Amazon Linux 2023 AMI containing:
-  - Kubernetes 1.29.0 (kubelet, kubeadm, kubectl)
-  - containerd runtime with systemd cgroup driver
-  - CNI plugins and networking configuration
-  - Pre-pulled Kubernetes control plane and worker node images
-  - This process takes 5-10 minutes 
-- Outputs AMI ID for use in target region deployment
-
-**Phase 2:** Store AMI IDs in SSM Parameter Store
-
-```bash
-# Store control plane AMI ID
-aws ssm put-parameter \
-  --name "/k8s-cluster/control-plane-ami-id" \
-  --value "$CONTROL_AMI" \
-  --type "String" \
-  --region us-gov-west-1 \
-  --overwrite
-
-# Store worker AMI ID  
-aws ssm put-parameter \
-  --name "/k8s-cluster/worker-ami-id" \
-  --value "$WORKER_AMI" \
-  --type "String" \
-  --region us-gov-west-1 \
-  --overwrite
-```
-
-**Phase 3:** Deploy to Target Region
-- Copy/share the AMI to your target region if needed
-- Deploy CDK stacks using the pre-built AMIs
-- All dependencies are pre-installed, eliminating internet requirements during cluster bootstrap
 
 ### 2. CDK Deployment
 
@@ -77,8 +42,7 @@ cdk deploy IamStack
 cdk deploy K8sClusterStack
 ```
 
-This approach ensures your Kubernetes cluster can deploy without external internet 
-dependencies while maintaining security compliance.
+This approach ensures your Kubernetes cluster can deploy without external internet dependencies while maintaining security compliance.
 
 ---
 
