@@ -43,6 +43,7 @@ export class ComputeStack extends Construct {
   public readonly workerAutoScalingGroup: autoscaling.AutoScalingGroup;
   public readonly etcdLifecycleLambda: lambda.Function;
   public readonly etcdBackupLambda: lambda.Function;
+  public readonly clusterHealthLambda: lambda.Function;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
     super(scope, id);
@@ -81,7 +82,7 @@ export class ComputeStack extends Construct {
 
     // Add control plane bootstrap script
     this.controlPlaneLaunchTemplate.userData?.addCommands(
-      this.createControlPlaneBootstrapScript(props.clusterName, props.oidcProviderArn, props.oidcBucketName)
+      this.createControlPlaneBootstrapScript(props.clusterName, props.oidcProviderArn, props.oidcBucketName, props.etcdBackupBucketName)
     );
 
     // Set dedicated tenancy and fix IMDS configuration
@@ -231,6 +232,70 @@ export class ComputeStack extends Construct {
       ruleName: `${props.clusterName}-etcd-backup-schedule`,
       schedule: events.Schedule.rate(cdk.Duration.hours(6)),
       targets: [new targets.LambdaFunction(this.etcdBackupLambda)]
+    });
+
+    // Lambda function for cluster health monitoring and auto-recovery
+    const clusterHealthRole = new iam.Role(this, 'ClusterHealthRole', {
+      roleName: `${props.clusterName}-cluster-health-role`,
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')
+      ]
+    });
+
+    this.clusterHealthLambda = new lambda.Function(this, 'ClusterHealthLambda', {
+      functionName: `${props.clusterName}-cluster-health`,
+      runtime: lambda.Runtime.PYTHON_3_11,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(this.createClusterHealthLambdaCode(props.clusterName, props.etcdBackupBucketName)),
+      timeout: cdk.Duration.minutes(2),
+      role: clusterHealthRole,
+      environment: {
+        CLUSTER_NAME: props.clusterName,
+        BACKUP_BUCKET: props.etcdBackupBucketName,
+        REGION: cdk.Stack.of(this).region,
+        CONTROL_PLANE_ASG_NAME: `${props.clusterName}-control-plane`,
+        UNHEALTHY_THRESHOLD: '3' // Number of consecutive failures before triggering restore
+      }
+    });
+
+    // Grant health check Lambda permissions
+    clusterHealthRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'autoscaling:DescribeAutoScalingGroups',
+        'ec2:DescribeInstances'
+      ],
+      resources: ['*']
+    }));
+
+    clusterHealthRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'ssm:GetParameter',
+        'ssm:PutParameter'
+      ],
+      resources: [
+        `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/${props.clusterName}/*`
+      ]
+    }));
+
+    clusterHealthRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        's3:ListBucket',
+        's3:GetObject'
+      ],
+      resources: [
+        `arn:aws:s3:::${props.etcdBackupBucketName}`,
+        `arn:aws:s3:::${props.etcdBackupBucketName}/*`
+      ]
+    }));
+
+    props.kmsKey.grantDecrypt(clusterHealthRole);
+
+    // Scheduled rule to check cluster health every 5 minutes
+    new events.Rule(this, 'ClusterHealthSchedule', {
+      ruleName: `${props.clusterName}-cluster-health-schedule`,
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new targets.LambdaFunction(this.clusterHealthLambda)]
     });
 
     // Worker node launch template
@@ -1462,7 +1527,262 @@ def wait_for_backup_command(command_id, instance_id, s3_key):
 `;
   }
 
-  private createControlPlaneBootstrapScript(clusterName: string, oidcProviderArn: string, oidcBucketName: string): string {
+  private createClusterHealthLambdaCode(clusterName: string, backupBucket: string): string {
+    return `
+import json
+import boto3
+import os
+import logging
+from datetime import datetime
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ec2 = boto3.client('ec2')
+autoscaling = boto3.client('autoscaling')
+ssm = boto3.client('ssm')
+s3 = boto3.client('s3')
+
+def handler(event, context):
+    """
+    Scheduled health check for cluster auto-recovery.
+
+    Checks:
+    1. Are there any healthy control plane instances in the ASG?
+    2. If 0 healthy instances for UNHEALTHY_THRESHOLD consecutive checks, trigger restore mode.
+
+    This enables automatic disaster recovery when all control plane nodes fail.
+    """
+    cluster_name = os.environ['CLUSTER_NAME']
+    region = os.environ['REGION']
+    threshold = int(os.environ.get('UNHEALTHY_THRESHOLD', '3'))
+
+    try:
+        logger.info(f"Running health check for cluster {cluster_name}")
+
+        # Check for healthy control plane instances
+        healthy_count = get_healthy_instance_count()
+        logger.info(f"Healthy control plane instances: {healthy_count}")
+
+        # Get current failure count from SSM
+        failure_count = get_failure_count(cluster_name, region)
+
+        if healthy_count == 0:
+            # No healthy instances - increment failure counter
+            failure_count += 1
+            logger.warning(f"No healthy instances! Failure count: {failure_count}/{threshold}")
+
+            if failure_count >= threshold:
+                # Check if we have a backup to restore from
+                latest_backup = get_latest_backup()
+                if latest_backup:
+                    logger.error(f"TRIGGERING AUTO-RECOVERY - {failure_count} consecutive failures")
+                    logger.info(f"Latest backup available: {latest_backup}")
+                    trigger_restore_mode(cluster_name, region, latest_backup)
+                    return {
+                        'statusCode': 200,
+                        'body': f'Restore mode triggered, backup: {latest_backup}'
+                    }
+                else:
+                    logger.error("No backup available for restore!")
+                    set_failure_count(cluster_name, region, failure_count)
+                    return {
+                        'statusCode': 500,
+                        'body': 'Cluster unhealthy but no backup available'
+                    }
+            else:
+                set_failure_count(cluster_name, region, failure_count)
+                return {
+                    'statusCode': 200,
+                    'body': f'Unhealthy, failure count: {failure_count}/{threshold}'
+                }
+        else:
+            # Cluster is healthy
+            if failure_count > 0:
+                logger.info("Cluster recovered, resetting failure count")
+                set_failure_count(cluster_name, region, 0)
+
+                # Clear restore mode if it was set
+                clear_restore_mode(cluster_name, region)
+
+            return {
+                'statusCode': 200,
+                'body': f'Healthy, {healthy_count} instances'
+            }
+
+    except Exception as e:
+        logger.error(f"Health check error: {str(e)}", exc_info=True)
+        return {'statusCode': 500, 'body': f'Error: {str(e)}'}
+
+
+def get_healthy_instance_count():
+    """Count healthy control plane instances in ASG"""
+    asg_name = os.environ.get('CONTROL_PLANE_ASG_NAME')
+
+    try:
+        response = autoscaling.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[asg_name]
+        )
+
+        if not response['AutoScalingGroups']:
+            return 0
+
+        asg = response['AutoScalingGroups'][0]
+
+        # Get instances that are InService
+        in_service_ids = [
+            i['InstanceId'] for i in asg['Instances']
+            if i['LifecycleState'] == 'InService'
+        ]
+
+        if not in_service_ids:
+            return 0
+
+        # Verify they're actually running
+        response = ec2.describe_instances(InstanceIds=in_service_ids)
+
+        running_count = 0
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                if instance['State']['Name'] == 'running':
+                    running_count += 1
+
+        return running_count
+
+    except Exception as e:
+        logger.error(f"Error getting instance count: {str(e)}")
+        return 0
+
+
+def get_failure_count(cluster_name, region):
+    """Get consecutive failure count from SSM"""
+    try:
+        response = ssm.get_parameter(
+            Name=f'/{cluster_name}/health/failure-count'
+        )
+        return int(response['Parameter']['Value'])
+    except ssm.exceptions.ParameterNotFound:
+        return 0
+    except Exception as e:
+        logger.error(f"Error getting failure count: {str(e)}")
+        return 0
+
+
+def set_failure_count(cluster_name, region, count):
+    """Set consecutive failure count in SSM"""
+    try:
+        ssm.put_parameter(
+            Name=f'/{cluster_name}/health/failure-count',
+            Value=str(count),
+            Type='String',
+            Overwrite=True
+        )
+    except Exception as e:
+        logger.error(f"Error setting failure count: {str(e)}")
+
+
+def get_latest_backup():
+    """Get the latest backup file from S3"""
+    bucket = os.environ['BACKUP_BUCKET']
+    cluster_name = os.environ['CLUSTER_NAME']
+    prefix = f"{cluster_name}/"
+
+    try:
+        response = s3.list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix
+        )
+
+        if 'Contents' not in response or not response['Contents']:
+            return None
+
+        # Sort by LastModified descending
+        objects = sorted(
+            response['Contents'],
+            key=lambda x: x['LastModified'],
+            reverse=True
+        )
+
+        # Return the most recent backup
+        latest = objects[0]['Key']
+        logger.info(f"Latest backup: {latest}, modified: {objects[0]['LastModified']}")
+        return latest
+
+    except Exception as e:
+        logger.error(f"Error listing backups: {str(e)}")
+        return None
+
+
+def trigger_restore_mode(cluster_name, region, backup_key):
+    """Set restore mode flag in SSM to trigger recovery on next bootstrap"""
+    try:
+        # Set restore mode with backup location
+        ssm.put_parameter(
+            Name=f'/{cluster_name}/cluster/restore-mode',
+            Value='true',
+            Type='String',
+            Overwrite=True
+        )
+
+        ssm.put_parameter(
+            Name=f'/{cluster_name}/cluster/restore-backup',
+            Value=backup_key,
+            Type='String',
+            Overwrite=True
+        )
+
+        ssm.put_parameter(
+            Name=f'/{cluster_name}/cluster/restore-triggered-at',
+            Value=datetime.utcnow().isoformat(),
+            Type='String',
+            Overwrite=True
+        )
+
+        # Mark cluster as NOT initialized so new nodes will attempt init/restore
+        ssm.put_parameter(
+            Name=f'/{cluster_name}/cluster/initialized',
+            Value='false',
+            Type='String',
+            Overwrite=True
+        )
+
+        logger.info(f"Restore mode triggered with backup: {backup_key}")
+
+    except Exception as e:
+        logger.error(f"Error triggering restore mode: {str(e)}")
+        raise
+
+
+def clear_restore_mode(cluster_name, region):
+    """Clear restore mode flag after successful recovery"""
+    try:
+        # Check if restore mode is set
+        try:
+            response = ssm.get_parameter(Name=f'/{cluster_name}/cluster/restore-mode')
+            if response['Parameter']['Value'] != 'true':
+                return
+        except ssm.exceptions.ParameterNotFound:
+            return
+
+        # Clear restore mode
+        ssm.put_parameter(
+            Name=f'/{cluster_name}/cluster/restore-mode',
+            Value='false',
+            Type='String',
+            Overwrite=True
+        )
+
+        # Reset failure count
+        set_failure_count(cluster_name, region, 0)
+
+        logger.info("Restore mode cleared - cluster recovered")
+
+    except Exception as e:
+        logger.error(f"Error clearing restore mode: {str(e)}")
+`;
+  }
+
+  private createControlPlaneBootstrapScript(clusterName: string, oidcProviderArn: string, oidcBucketName: string, etcdBackupBucketName: string): string {
     return `
 # Control plane bootstrap script - Cluster initialization and joining
 echo "Starting control plane bootstrap for cluster: ${clusterName}"
@@ -1747,10 +2067,190 @@ except:
     fi
 }
 
+# Function to restore etcd from backup
+restore_from_backup() {
+    local backup_key="$1"
+    echo "Restoring cluster from backup: $backup_key"
+
+    BOOTSTRAP_STAGE="restore-download"
+
+    # Download backup from S3
+    local backup_file="/tmp/etcd-restore.db"
+    if ! retry_command "aws s3 cp s3://${etcdBackupBucketName}/\$backup_key \$backup_file --region $REGION"; then
+        echo "ERROR: Failed to download backup from S3"
+        return 1
+    fi
+
+    echo "Backup downloaded successfully"
+
+    BOOTSTRAP_STAGE="restore-etcd"
+
+    # Create data directory for restored etcd
+    local restore_dir="/var/lib/etcd-restore"
+    rm -rf \$restore_dir
+    mkdir -p \$restore_dir
+
+    # Restore etcd snapshot
+    # Note: We use a new data directory and will configure etcd to use it
+    ETCDCTL_API=3 etcdctl snapshot restore \$backup_file \\
+        --data-dir=\$restore_dir \\
+        --name=$(hostname) \\
+        --initial-cluster=$(hostname)=https://\$PRIVATE_IP:2380 \\
+        --initial-cluster-token=${clusterName}-restored \\
+        --initial-advertise-peer-urls=https://\$PRIVATE_IP:2380
+
+    if [ \$? -ne 0 ]; then
+        echo "ERROR: etcd restore failed"
+        return 1
+    fi
+
+    echo "etcd snapshot restored to \$restore_dir"
+
+    # Move restored data to etcd data directory
+    rm -rf /var/lib/etcd
+    mv \$restore_dir /var/lib/etcd
+
+    # Set proper ownership
+    chown -R root:root /var/lib/etcd
+
+    # Clean up
+    rm -f \$backup_file
+
+    BOOTSTRAP_STAGE="restore-kubeadm"
+
+    # Initialize kubeadm with the restored etcd
+    # Use kubeadm init phase to set up control plane components
+    # but skip etcd since we restored it
+
+    # First, create kubeadm config for restoration
+    cat > /tmp/kubeadm-restore-config.yaml << KUBEADMEOF
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: \$PRIVATE_IP
+  bindPort: 6443
+nodeRegistration:
+  name: $(hostname)
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: v\$KUBERNETES_VERSION
+controlPlaneEndpoint: "${clusterName}-cp-lb.internal:6443"
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+apiServer:
+  extraArgs:
+    service-account-issuer: https://s3.$REGION.amazonaws.com/${oidcBucketName}
+KUBEADMEOF
+
+    # Run kubeadm init with the restored etcd
+    # The --ignore-preflight-errors is needed because etcd data already exists
+    kubeadm init \\
+        --config=/tmp/kubeadm-restore-config.yaml \\
+        --ignore-preflight-errors=DirAvailable--var-lib-etcd \\
+        --upload-certs
+
+    if [ \$? -ne 0 ]; then
+        echo "ERROR: kubeadm init after restore failed"
+        return 1
+    fi
+
+    echo "Cluster restored successfully!"
+
+    # Configure kubectl
+    mkdir -p /root/.kube
+    cp -i /etc/kubernetes/admin.conf /root/.kube/config
+    chown root:root /root/.kube/config
+
+    # Generate new tokens and update SSM
+    CERT_KEY=$(kubeadm certs certificate-key)
+    kubeadm init phase upload-certs --upload-certs --certificate-key=\$CERT_KEY
+
+    JOIN_TOKEN=$(kubeadm token create --ttl 24h)
+    CA_CERT_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
+
+    # Update SSM parameters
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION"
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
+
+    # Clear restore mode
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/restore-mode' --value 'false' --type 'String' --overwrite --region $REGION"
+
+    # Register etcd member
+    register_etcd_member || echo "WARNING: Failed to register etcd member"
+
+    # Install CNI
+    echo "Installing Cilium CNI plugin..."
+    kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.14.5/install/kubernetes/quick-install.yaml
+
+    return 0
+}
+
+# Check for restore mode (disaster recovery)
+RESTORE_MODE=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/restore-mode' --query 'Parameter.Value' --output text --region $REGION" || echo "false")
+RESTORE_BACKUP=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/restore-backup' --query 'Parameter.Value' --output text --region $REGION" || echo "")
+
+if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
+    echo "RESTORE MODE DETECTED - Attempting disaster recovery"
+    echo "Backup to restore: \$RESTORE_BACKUP"
+
+    # Try to acquire restore lock
+    if aws dynamodb put-item \\
+        --table-name "${clusterName}-etcd-members" \\
+        --item '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"restore-lock"},"InstanceId":{"S":"'$INSTANCE_ID'"},"Status":{"S":"RESTORING"},"CreatedAt":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' \\
+        --condition-expression "attribute_not_exists(ClusterId)" \\
+        --region $REGION 2>/dev/null; then
+
+        echo "Acquired restore lock, proceeding with restoration..."
+
+        if restore_from_backup "\$RESTORE_BACKUP"; then
+            echo "Disaster recovery completed successfully!"
+
+            # Register with load balancer
+            TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+            if [ -n "\$TARGET_GROUP_ARN" ]; then
+                retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+                LB_REGISTERED=true
+            fi
+
+            # Release restore lock
+            aws dynamodb delete-item \\
+                --table-name "${clusterName}-etcd-members" \\
+                --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"restore-lock"}}' \\
+                --region $REGION 2>/dev/null || true
+
+            BOOTSTRAP_STAGE="complete"
+            trap - EXIT
+
+            echo "Control plane bootstrap (restore) completed successfully!"
+            exit 0
+        else
+            echo "Disaster recovery failed!"
+            # Release restore lock
+            aws dynamodb delete-item \\
+                --table-name "${clusterName}-etcd-members" \\
+                --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"restore-lock"}}' \\
+                --region $REGION 2>/dev/null || true
+            exit 1
+        fi
+    else
+        echo "Another node is handling restoration, waiting for cluster to be ready..."
+        # Fall through to normal join logic
+    fi
+fi
+
 # Check if this should be the first control plane node
 if [ "$CLUSTER_INITIALIZED" = "false" ]; then
     echo "Attempting to initialize cluster as first control plane node..."
-    
+
     BOOTSTRAP_STAGE="acquiring-lock"
 
     # Try to acquire cluster initialization lock using DynamoDB

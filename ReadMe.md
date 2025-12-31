@@ -282,6 +282,66 @@ The cluster automatically creates these VPC endpoints for SSM access in isolated
 
 ---
 
+## Disaster Recovery
+
+### Automatic etcd Backups
+
+The cluster automatically creates etcd snapshots every 6 hours:
+
+- **Backup Location**: `s3://<cluster-name>-etcd-backup-*/`
+- **Retention**: 30 days (moves to Infrequent Access after 7 days)
+- **Format**: `<cluster-name>/etcd-snapshot-YYYYMMDD-HHMMSS.db`
+
+### Automatic Recovery
+
+If all control plane nodes fail simultaneously, the cluster will automatically recover:
+
+**How it works:**
+1. Health check Lambda runs every 5 minutes
+2. Checks for healthy control plane instances in ASG
+3. If 0 healthy instances for 3 consecutive checks (15 min):
+   - Triggers "restore mode" via SSM parameter
+   - Sets `/<cluster>/cluster/initialized` to `false`
+4. When ASG launches new control plane instances:
+   - Bootstrap script detects restore mode
+   - Downloads latest backup from S3
+   - Restores etcd from snapshot
+   - Reinitializes Kubernetes control plane
+   - Clears restore mode flag
+
+**Safeguards:**
+- Only triggers when **0 healthy instances** (ASG normally maintains 3)
+- Requires 3 consecutive failed checks (15 minutes) to avoid false positives
+- Uses DynamoDB lock to prevent multiple nodes from restoring simultaneously
+- Verifies backup exists before triggering restore
+
+### Manual Recovery
+
+If automatic recovery fails or you need to restore a specific backup:
+
+```bash
+# List available backups
+aws s3 ls s3://<cluster>-etcd-backup-<suffix>/<cluster>/
+
+# Trigger manual restore
+aws ssm put-parameter --name "/<cluster>/cluster/restore-mode" --value "true" --type String --overwrite
+aws ssm put-parameter --name "/<cluster>/cluster/restore-backup" --value "<cluster>/etcd-snapshot-YYYYMMDD-HHMMSS.db" --type String --overwrite
+aws ssm put-parameter --name "/<cluster>/cluster/initialized" --value "false" --type String --overwrite
+
+# Terminate existing control plane instances to trigger new ones
+aws autoscaling set-desired-capacity --auto-scaling-group-name <cluster>-control-plane --desired-capacity 0
+sleep 60
+aws autoscaling set-desired-capacity --auto-scaling-group-name <cluster>-control-plane --desired-capacity 3
+```
+
+### Limitations
+
+- **Data loss window**: Up to 6 hours (backup interval) of cluster state may be lost
+- **Workloads**: Running pods are not backed up - only cluster state (deployments, services, etc.)
+- **PersistentVolumes**: PV data is NOT included in etcd backups - use separate backup strategy
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
@@ -326,6 +386,9 @@ Key completed features:
 - ✅ Cluster autoscaling support
 - ✅ IRSA (IAM Roles for Service Accounts) via S3-hosted OIDC
 - ✅ SSM Session Manager access to control plane nodes
+- ✅ Graceful node draining before termination
+- ✅ Automatic etcd backups to S3 (every 6 hours)
+- ✅ Automatic disaster recovery from backups
 - ✅ Comprehensive test coverage (58 tests)
 
 In progress:
