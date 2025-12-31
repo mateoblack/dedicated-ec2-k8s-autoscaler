@@ -50,19 +50,20 @@ export class IamStack extends Construct {
     this.kmsKey.grantEncryptDecrypt(this.controlPlaneRole);
     this.kmsKey.grantEncryptDecrypt(this.workerNodeRole);
 
-    this.addSSMPermissions(this.controlPlaneRole, props.clusterName);
-    this.addSSMPermissions(this.workerNodeRole, props.clusterName);
+    // SSM permissions - control plane needs read/write, workers only need read
+    this.addSSMPermissions(this.controlPlaneRole, props.clusterName, true);
+    this.addSSMPermissions(this.workerNodeRole, props.clusterName, false);
 
     this.addCloudWatchPermissions(this.controlPlaneRole, props.clusterName);
     this.addCloudWatchPermissions(this.workerNodeRole, props.clusterName);
 
-    // DynamoDB permissions for bootstrap and etcd member tables (both roles need access)
-    this.addDynamoDBPermissions(this.controlPlaneRole, props.clusterName);
-    this.addDynamoDBPermissions(this.workerNodeRole, props.clusterName);
+    // DynamoDB permissions - control plane needs full access, workers only need limited
+    this.addDynamoDBPermissions(this.controlPlaneRole, props.clusterName, true);
+    this.addDynamoDBPermissions(this.workerNodeRole, props.clusterName, false);
 
-    // S3 permissions for bootstrap bucket (both roles need access)
-    this.addS3Permissions(this.controlPlaneRole, props.clusterName);
-    this.addS3Permissions(this.workerNodeRole, props.clusterName);
+    // S3 permissions - control plane needs read/write, workers only need read
+    this.addS3Permissions(this.controlPlaneRole, props.clusterName, true);
+    this.addS3Permissions(this.workerNodeRole, props.clusterName, false);
 
     // Control plane specific permissions - can autoscale workers
     this.controlPlaneRole.addToPolicy(new iam.PolicyStatement({
@@ -93,7 +94,37 @@ export class IamStack extends Construct {
         "ec2:DetachVolume",
         "ec2:RevokeSecurityGroupIngress",
         "ec2:DescribeVpcs",
-        "elasticloadbalancing:*"
+        // ELB permissions - scoped to specific actions instead of wildcard
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeLoadBalancerAttributes",
+        "elasticloadbalancing:DescribeListeners",
+        "elasticloadbalancing:DescribeListenerCertificates",
+        "elasticloadbalancing:DescribeSSLPolicies",
+        "elasticloadbalancing:DescribeRules",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetGroupAttributes",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "elasticloadbalancing:DescribeTags",
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:CreateRule",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:DeleteRule",
+        "elasticloadbalancing:ModifyLoadBalancerAttributes",
+        "elasticloadbalancing:ModifyTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:ModifyListener",
+        "elasticloadbalancing:ModifyRule",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:DeregisterTargets",
+        "elasticloadbalancing:SetIpAddressType",
+        "elasticloadbalancing:SetSecurityGroups",
+        "elasticloadbalancing:SetSubnets",
+        "elasticloadbalancing:AddTags",
+        "elasticloadbalancing:RemoveTags"
       ],
       resources: ["*"],
       conditions: {
@@ -146,18 +177,28 @@ export class IamStack extends Construct {
     };
 
     // Add cluster-autoscaler permissions to IRSA role
+    // Describe actions require resource: * (AWS API limitation)
     this.clusterAutoscalerIrsaRole.addToPolicy(new iam.PolicyStatement({
       actions: [
         'autoscaling:DescribeAutoScalingGroups',
         'autoscaling:DescribeAutoScalingInstances',
         'autoscaling:DescribeLaunchConfigurations',
         'autoscaling:DescribeTags',
-        'autoscaling:SetDesiredCapacity',
-        'autoscaling:TerminateInstanceInAutoScalingGroup',
         'ec2:DescribeInstances',
         'ec2:DescribeLaunchTemplateVersions'
       ],
       resources: ['*']
+    }));
+
+    // Modification actions scoped to cluster ASGs only
+    this.clusterAutoscalerIrsaRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'autoscaling:SetDesiredCapacity',
+        'autoscaling:TerminateInstanceInAutoScalingGroup'
+      ],
+      resources: [
+        `arn:aws:autoscaling:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:autoScalingGroup:*:autoScalingGroupName/${props.clusterName}-*`
+      ]
     }));
 
     // Control plane needs permission to update OIDC provider after cluster init
@@ -171,15 +212,23 @@ export class IamStack extends Construct {
     }));
   }
 
-  private addSSMPermissions(role: iam.Role, clusterName: string) {
+  private addSSMPermissions(role: iam.Role, clusterName: string, isControlPlane: boolean) {
+    // Workers only need read access to SSM parameters
+    const actions = isControlPlane
+      ? [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+          "ssm:DescribeParameters",
+        ]
+      : [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+        ];
+
     role.addToPolicy(new iam.PolicyStatement({
-      actions: [
-        "ssm:GetParameter",
-        "ssm:GetParameters",
-        "ssm:PutParameter",
-        "ssm:DeleteParameter",
-        "ssm:DescribeParameters",
-      ],
+      actions,
       resources: [
         `arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/${clusterName}/*`
       ]
@@ -200,16 +249,27 @@ export class IamStack extends Construct {
     }));
   }
 
-  private addDynamoDBPermissions(role: iam.Role, clusterName: string) {
+  private addDynamoDBPermissions(role: iam.Role, clusterName: string, isControlPlane: boolean) {
+    // Workers only need limited DynamoDB access for bootstrap coordination
+    // Control plane needs full access for etcd member management
+    const actions = isControlPlane
+      ? [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+      : [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ];
+
     role.addToPolicy(new iam.PolicyStatement({
-      actions: [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:Query",
-        "dynamodb:Scan"
-      ],
+      actions,
       resources: [
         `arn:aws:dynamodb:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:table/${clusterName}-bootstrap-lock`,
         `arn:aws:dynamodb:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:table/${clusterName}-etcd-members`,
@@ -218,14 +278,23 @@ export class IamStack extends Construct {
     }));
   }
 
-  private addS3Permissions(role: iam.Role, clusterName: string) {
+  private addS3Permissions(role: iam.Role, clusterName: string, isControlPlane: boolean) {
+    // Workers only need read access to S3 buckets
+    // Control plane needs full access for OIDC and backups
+    const actions = isControlPlane
+      ? [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+      : [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ];
+
     role.addToPolicy(new iam.PolicyStatement({
-      actions: [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
-      ],
+      actions,
       resources: [
         `arn:aws:s3:::${clusterName}-bootstrap-*`,
         `arn:aws:s3:::${clusterName}-bootstrap-*/*`

@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (90 tests across 18 files):**
+**Test coverage (107 tests across 19 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -212,6 +212,7 @@ npm run test:code
 | `control-plane-launch-template.test.ts` | Control plane EC2 configuration |
 | `worker-launch-template.test.ts` | Worker node EC2 configuration |
 | `iam-stack.test.ts` | IAM roles, KMS, and permissions |
+| `iam-least-privilege.test.ts` | Least privilege IAM policy scoping |
 | `network-stack.test.ts` | VPC, subnets, and load balancer |
 | `database-stack.test.ts` | DynamoDB tables and S3 buckets |
 | `security-groups.test.ts` | Security group rules |
@@ -511,7 +512,8 @@ Key completed features:
 - ✅ Automatic certificate rotation (kubelet + control plane)
 - ✅ CloudWatch alarms and dashboard for monitoring
 - ✅ HA system components (cluster-autoscaler, CSR-approver with 2 replicas)
-- ✅ Comprehensive test coverage (90 tests)
+- ✅ Least privilege IAM policies (workers read-only, scoped resources)
+- ✅ Comprehensive test coverage (107 tests)
 
 In progress:
 - Testing of edge cases and failure scenarios 
