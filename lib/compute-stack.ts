@@ -1497,9 +1497,113 @@ check_control_plane_token_age() {
     echo "\$age_hours"
 }
 
+# Function to check etcd cluster health via an existing control plane node
+check_etcd_health() {
+    echo "Checking etcd cluster health before joining..."
+
+    # Find a healthy control plane instance
+    CONTROL_PLANE_INSTANCE=$(aws ec2 describe-instances \
+        --filters "Name=tag:aws:autoscaling:groupName,Values=${clusterName}-control-plane" \
+                  "Name=instance-state-name,Values=running" \
+        --query 'Reservations[0].Instances[0].InstanceId' \
+        --output text --region $REGION 2>/dev/null)
+
+    if [ -z "\$CONTROL_PLANE_INSTANCE" ] || [ "\$CONTROL_PLANE_INSTANCE" = "None" ]; then
+        echo "WARNING: No control plane instance found to check etcd health"
+        return 0  # Allow join attempt anyway
+    fi
+
+    echo "Checking etcd via instance: \$CONTROL_PLANE_INSTANCE"
+
+    # Check etcd health via SSM
+    local health_script='
+export ETCDCTL_API=3
+export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
+export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt
+export ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt
+export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key
+
+# Check endpoint health
+if etcdctl endpoint health --cluster 2>&1; then
+    # Also check that we have quorum
+    MEMBER_COUNT=$(etcdctl member list 2>/dev/null | wc -l)
+    if [ "$MEMBER_COUNT" -ge 1 ]; then
+        echo "ETCD_HEALTHY members=$MEMBER_COUNT"
+    else
+        echo "ETCD_NO_MEMBERS"
+    fi
+else
+    echo "ETCD_UNHEALTHY"
+fi
+'
+
+    # Execute via SSM Run Command
+    local command_id=$(aws ssm send-command \
+        --instance-ids "\$CONTROL_PLANE_INSTANCE" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=[\"\$health_script\"]" \
+        --query 'Command.CommandId' \
+        --output text --region $REGION 2>/dev/null)
+
+    if [ -z "\$command_id" ] || [ "\$command_id" = "None" ]; then
+        echo "WARNING: Failed to send health check command"
+        return 0  # Allow join attempt anyway
+    fi
+
+    # Wait for command completion
+    local max_wait=60
+    local elapsed=0
+    while [ \$elapsed -lt \$max_wait ]; do
+        sleep 5
+        elapsed=\$((elapsed + 5))
+
+        local status=$(aws ssm get-command-invocation \
+            --command-id "\$command_id" \
+            --instance-id "\$CONTROL_PLANE_INSTANCE" \
+            --query 'Status' --output text --region $REGION 2>/dev/null)
+
+        if [ "\$status" = "Success" ]; then
+            local output=$(aws ssm get-command-invocation \
+                --command-id "\$command_id" \
+                --instance-id "\$CONTROL_PLANE_INSTANCE" \
+                --query 'StandardOutputContent' --output text --region $REGION 2>/dev/null)
+
+            if echo "\$output" | grep -q "ETCD_HEALTHY"; then
+                local member_count=$(echo "\$output" | grep "ETCD_HEALTHY" | sed 's/.*members=//')
+                echo "etcd cluster is healthy with \$member_count members"
+                return 0
+            elif echo "\$output" | grep -q "ETCD_NO_MEMBERS"; then
+                echo "WARNING: etcd cluster has no members - this is unexpected"
+                return 1
+            else
+                echo "WARNING: etcd cluster may be unhealthy"
+                return 1
+            fi
+        elif [ "\$status" = "Failed" ] || [ "\$status" = "Cancelled" ] || [ "\$status" = "TimedOut" ]; then
+            echo "WARNING: Health check command failed"
+            return 0  # Allow join attempt anyway
+        fi
+    done
+
+    echo "WARNING: Timeout waiting for health check"
+    return 0  # Allow join attempt anyway
+}
+
 # Join existing cluster as additional control plane node
 if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; then
     echo "Joining existing cluster as additional control plane node..."
+
+    # Check etcd health before attempting to join
+    ETCD_HEALTHY=true
+    if ! check_etcd_health; then
+        echo "WARNING: etcd cluster may not be healthy. Waiting before join attempt..."
+        # Wait and retry health check
+        sleep 30
+        if ! check_etcd_health; then
+            echo "ERROR: etcd cluster still unhealthy after waiting. Aborting join."
+            exit 1
+        fi
+    fi
 
     # Check token age and refresh if needed
     TOKEN_AGE=$(check_control_plane_token_age)
