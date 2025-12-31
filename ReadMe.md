@@ -14,7 +14,7 @@ This project creates a fully self-managed Kubernetes cluster on AWS using EC2 de
 - Bootstrap scripts only handle configuration and cluster joining
 - Nodes are completely replaceable without manual intervention
 
-This is a **production-ready** self-managed Kubernetes cluster that you own and control, with automated deployment, self-healing capabilities, and proper etcd lifecycle management.
+This is a self-managed Kubernetes cluster that you own and control, with automated deployment, self-healing capabilities, and proper etcd lifecycle management.
 
 ---
 
@@ -225,7 +225,7 @@ sudo journalctl -u containerd -f
 
 ## Status 
 
-Production-ready with active development for additional features.
+Active development under test phase, graduated from build
 
 Key completed features:
 - ✅ Immutable AMI-based deployments
@@ -234,6 +234,7 @@ Key completed features:
 - ✅ CNI networking with Cilium
 - ✅ Cluster autoscaling support
 - ✅ Comprehensive test coverage
+- NOT DONE - Testing of edge cases and 
 
 ---
 

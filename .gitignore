@@ -7,3 +7,8 @@ bin/k8s-cluster.ts
 # Generated files
 **/*.d.ts
 **/*.js
+test/*.d.ts
+test/*.js
+DS_Store
+.DS_Store
+
