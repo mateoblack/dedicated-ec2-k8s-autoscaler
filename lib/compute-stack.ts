@@ -635,10 +635,55 @@ def complete_lifecycle_action(params, result):
 # Worker bootstrap script - Join cluster using pre-installed packages
 echo "Starting worker node bootstrap for cluster: ${clusterName}"
 
-# Get instance metadata
-INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+# Retry configuration
+MAX_RETRIES=5
+RETRY_DELAY=5
+
+# Retry helper that captures output
+retry_command_output() {
+    local cmd="$1"
+    local attempt=1
+    local delay=$RETRY_DELAY
+    local output=""
+
+    while [ $attempt -le $MAX_RETRIES ]; do
+        output=$(eval "$cmd" 2>/dev/null)
+        if [ $? -eq 0 ] && [ -n "$output" ]; then
+            echo "$output"
+            return 0
+        fi
+
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            sleep $delay
+            delay=$((delay * 2))
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+# Get instance metadata (with IMDSv2 support)
+get_instance_metadata() {
+    local path="$1"
+    local token=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null)
+    if [ -n "$token" ]; then
+        curl -s -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/latest/meta-data/$path"
+    else
+        curl -s "http://169.254.169.254/latest/meta-data/$path"
+    fi
+}
+
+INSTANCE_ID=$(get_instance_metadata "instance-id")
+PRIVATE_IP=$(get_instance_metadata "local-ipv4")
 REGION=${cdk.Stack.of(this).region}
+
+# Verify we got instance metadata
+if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
+    echo "ERROR: Failed to get instance metadata"
+    exit 1
+fi
 
 echo "Instance ID: $INSTANCE_ID"
 echo "Private IP: $PRIVATE_IP"
@@ -646,7 +691,7 @@ echo "Private IP: $PRIVATE_IP"
 # Wait for cluster to be initialized
 echo "Waiting for cluster to be initialized..."
 for i in {1..60}; do
-    CLUSTER_INITIALIZED=$(aws ssm get-parameter --name "/${clusterName}/cluster/initialized" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "false")
+    CLUSTER_INITIALIZED=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION" || echo "false")
     if [ "$CLUSTER_INITIALIZED" = "true" ]; then
         echo "Cluster is initialized, proceeding with worker join"
         break
@@ -660,11 +705,11 @@ if [ "$CLUSTER_INITIALIZED" != "true" ]; then
     exit 1
 fi
 
-# Get configuration from SSM parameters
-KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region $REGION)
-CLUSTER_ENDPOINT=$(aws ssm get-parameter --name "/${clusterName}/cluster/endpoint" --query 'Parameter.Value' --output text --region $REGION)
-JOIN_TOKEN=$(aws ssm get-parameter --name "/${clusterName}/cluster/join-token" --with-decryption --query 'Parameter.Value' --output text --region $REGION)
-CA_CERT_HASH=$(aws ssm get-parameter --name "/${clusterName}/cluster/ca-cert-hash" --query 'Parameter.Value' --output text --region $REGION)
+# Get configuration from SSM parameters (with retries)
+KUBERNETES_VERSION=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION")
+CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION")
+JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
+CA_CERT_HASH=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION")
 
 echo "Kubernetes Version: $KUBERNETES_VERSION"
 echo "Cluster Endpoint: $CLUSTER_ENDPOINT"
@@ -783,15 +828,89 @@ echo "Worker node bootstrap completed successfully!"
 # Control plane bootstrap script - Cluster initialization and joining
 echo "Starting control plane bootstrap for cluster: ${clusterName}"
 
-# Get instance metadata
-INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+# Retry configuration
+MAX_RETRIES=5
+RETRY_DELAY=5
+
+# Retry helper function with exponential backoff
+# Usage: retry_command <command>
+# Returns: 0 on success, 1 on failure after all retries
+retry_command() {
+    local cmd="$1"
+    local attempt=1
+    local delay=$RETRY_DELAY
+
+    while [ $attempt -le $MAX_RETRIES ]; do
+        echo "Executing (attempt $attempt/$MAX_RETRIES): $cmd"
+
+        if eval "$cmd"; then
+            return 0
+        fi
+
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            echo "Command failed, retrying in \${delay}s..."
+            sleep $delay
+            delay=$((delay * 2))  # Exponential backoff
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    echo "ERROR: Command failed after $MAX_RETRIES attempts: $cmd"
+    return 1
+}
+
+# Retry helper that captures output
+# Usage: result=$(retry_command_output <command>)
+retry_command_output() {
+    local cmd="$1"
+    local attempt=1
+    local delay=$RETRY_DELAY
+    local output=""
+
+    while [ $attempt -le $MAX_RETRIES ]; do
+        output=$(eval "$cmd" 2>/dev/null)
+        if [ $? -eq 0 ] && [ -n "$output" ]; then
+            echo "$output"
+            return 0
+        fi
+
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            sleep $delay
+            delay=$((delay * 2))
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+# Get instance metadata (with retries for IMDS)
+get_instance_metadata() {
+    local path="$1"
+    local token=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null)
+    if [ -n "$token" ]; then
+        curl -s -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/latest/meta-data/$path"
+    else
+        curl -s "http://169.254.169.254/latest/meta-data/$path"
+    fi
+}
+
+INSTANCE_ID=$(get_instance_metadata "instance-id")
+PRIVATE_IP=$(get_instance_metadata "local-ipv4")
 REGION=${cdk.Stack.of(this).region}
 
-# Get cluster configuration from SSM
-KUBERNETES_VERSION=$(aws ssm get-parameter --name "/${clusterName}/kubernetes/version" --query 'Parameter.Value' --output text --region $REGION)
-CLUSTER_ENDPOINT=$(aws ssm get-parameter --name "/${clusterName}/cluster/endpoint" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "")
-CLUSTER_INITIALIZED=$(aws ssm get-parameter --name "/${clusterName}/cluster/initialized" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "false")
+# Verify we got instance metadata
+if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
+    echo "ERROR: Failed to get instance metadata"
+    exit 1
+fi
+
+# Get cluster configuration from SSM (with retries)
+KUBERNETES_VERSION=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION")
+CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION" || echo "")
+CLUSTER_INITIALIZED=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION" || echo "false")
 
 echo "Instance ID: $INSTANCE_ID"
 echo "Private IP: $PRIVATE_IP"
@@ -944,11 +1063,11 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
             JOIN_TOKEN=$(kubeadm token list | grep -v TOKEN | head -1 | awk '{print $1}')
             CA_CERT_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
             
-            # Store cluster information in SSM
-            aws ssm put-parameter --name "/${clusterName}/cluster/endpoint" --value "${clusterName}-cp-lb.internal:6443" --type "String" --overwrite --region $REGION
-            aws ssm put-parameter --name "/${clusterName}/cluster/join-token" --value "$JOIN_TOKEN" --type "SecureString" --overwrite --region $REGION
-            aws ssm put-parameter --name "/${clusterName}/cluster/ca-cert-hash" --value "sha256:$CA_CERT_HASH" --type "String" --overwrite --region $REGION
-            aws ssm put-parameter --name "/${clusterName}/cluster/initialized" --value "true" --type "String" --overwrite --region $REGION
+            # Store cluster information in SSM (with retries)
+            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION"
+            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"
+            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
+            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
 
             # Register this node's etcd member in DynamoDB for lifecycle management
             register_etcd_member || echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
@@ -1012,10 +1131,10 @@ OIDCEOF
 }
 JWKSEOF
 
-                # Upload OIDC documents to S3
+                # Upload OIDC documents to S3 (with retries)
                 echo "Uploading OIDC discovery documents to S3..."
-                aws s3 cp /tmp/openid-configuration.json s3://$OIDC_BUCKET/.well-known/openid-configuration --content-type application/json --region $REGION
-                aws s3 cp /tmp/keys.json s3://$OIDC_BUCKET/keys.json --content-type application/json --region $REGION
+                retry_command "aws s3 cp /tmp/openid-configuration.json s3://\$OIDC_BUCKET/.well-known/openid-configuration --content-type application/json --region $REGION"
+                retry_command "aws s3 cp /tmp/keys.json s3://\$OIDC_BUCKET/keys.json --content-type application/json --region $REGION"
 
                 # Get the S3 TLS certificate thumbprint for the AWS OIDC provider
                 # AWS S3 uses Amazon Trust Services certificates
@@ -1024,23 +1143,20 @@ JWKSEOF
 
                 # For regional S3 endpoints, we need to get the actual thumbprint
                 S3_ENDPOINT="s3.$REGION.amazonaws.com"
-                ACTUAL_THUMBPRINT=$(echo | openssl s_client -servername $S3_ENDPOINT -connect $S3_ENDPOINT:443 2>/dev/null | openssl x509 -fingerprint -sha1 -noout | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+                ACTUAL_THUMBPRINT=$(echo | openssl s_client -servername \$S3_ENDPOINT -connect \$S3_ENDPOINT:443 2>/dev/null | openssl x509 -fingerprint -sha1 -noout | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
-                if [ -n "$ACTUAL_THUMBPRINT" ]; then
-                    S3_THUMBPRINT=$ACTUAL_THUMBPRINT
+                if [ -n "\$ACTUAL_THUMBPRINT" ]; then
+                    S3_THUMBPRINT=\$ACTUAL_THUMBPRINT
                 fi
 
-                echo "S3 TLS Thumbprint: $S3_THUMBPRINT"
+                echo "S3 TLS Thumbprint: \$S3_THUMBPRINT"
 
-                # Update the AWS OIDC provider with the correct thumbprint
+                # Update the AWS OIDC provider with the correct thumbprint (with retries)
                 echo "Updating AWS OIDC provider thumbprint..."
-                aws iam update-open-id-connect-provider-thumbprint \\
-                    --open-id-connect-provider-arn $OIDC_PROVIDER_ARN \\
-                    --thumbprint-list $S3_THUMBPRINT \\
-                    --region $REGION
+                retry_command "aws iam update-open-id-connect-provider-thumbprint --open-id-connect-provider-arn \$OIDC_PROVIDER_ARN --thumbprint-list \$S3_THUMBPRINT --region $REGION"
 
-                # Store OIDC issuer URL in SSM for reference
-                aws ssm put-parameter --name "/${clusterName}/oidc/issuer" --value "$OIDC_ISSUER" --type "String" --overwrite --region $REGION
+                # Store OIDC issuer URL in SSM for reference (with retries)
+                retry_command "aws ssm put-parameter --name '/${clusterName}/oidc/issuer' --value '\$OIDC_ISSUER' --type 'String' --overwrite --region $REGION"
 
                 echo "OIDC setup completed successfully!"
             else
@@ -1092,13 +1208,15 @@ spec:
         - name: AWS_REGION
           value: $REGION
 EOF
-            
-            # Register this instance with load balancer target group
-            aws elbv2 register-targets \\
-                --target-group-arn $(aws elbv2 describe-target-groups --names "${clusterName}-control-plane-tg" --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION) \\
-                --targets Id=$INSTANCE_ID,Port=6443 \\
-                --region $REGION
-            
+
+            # Register this instance with load balancer target group (with retries)
+            TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+            if [ -n "\$TARGET_GROUP_ARN" ]; then
+                retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+            else
+                echo "WARNING: Could not find target group ARN"
+            fi
+
             echo "First control plane node setup completed successfully!"
         else
             echo "Cluster initialization failed!"
@@ -1130,15 +1248,15 @@ EOF
 fi
 
 # Join existing cluster as additional control plane node
-if [ "$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; then
+if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; then
     echo "Joining existing cluster as additional control plane node..."
-    
-    # Get join information from SSM
-    JOIN_TOKEN=$(aws ssm get-parameter --name "/${clusterName}/cluster/join-token" --with-decryption --query 'Parameter.Value' --output text --region $REGION)
-    CA_CERT_HASH=$(aws ssm get-parameter --name "/${clusterName}/cluster/ca-cert-hash" --query 'Parameter.Value' --output text --region $REGION)
-    CLUSTER_ENDPOINT=$(aws ssm get-parameter --name "/${clusterName}/cluster/endpoint" --query 'Parameter.Value' --output text --region $REGION)
-    
-    if [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ] && [ -n "$CLUSTER_ENDPOINT" ]; then
+
+    # Get join information from SSM (with retries)
+    JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
+    CA_CERT_HASH=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION")
+    CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION")
+
+    if [ -n "\$JOIN_TOKEN" ] && [ -n "\$CA_CERT_HASH" ] && [ -n "\$CLUSTER_ENDPOINT" ]; then
         # Join as control plane node
         kubeadm join $CLUSTER_ENDPOINT \\
             --token $JOIN_TOKEN \\
@@ -1157,11 +1275,13 @@ if [ "$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; t
             # Register this node's etcd member in DynamoDB for lifecycle management
             register_etcd_member || echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
 
-            # Register this instance with load balancer target group
-            aws elbv2 register-targets \\
-                --target-group-arn $(aws elbv2 describe-target-groups --names "${clusterName}-control-plane-tg" --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION) \\
-                --targets Id=$INSTANCE_ID,Port=6443 \\
-                --region $REGION
+            # Register this instance with load balancer target group (with retries)
+            TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+            if [ -n "\$TARGET_GROUP_ARN" ]; then
+                retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+            else
+                echo "WARNING: Could not find target group ARN"
+            fi
         else
             echo "Failed to join cluster as control plane node"
             exit 1
