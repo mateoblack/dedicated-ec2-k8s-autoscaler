@@ -23,9 +23,7 @@ export interface ComputeStackProps {
   readonly controlPlaneSubnets: ec2.ISubnet[];
   readonly workerSubnets: ec2.ISubnet[];
   readonly vpc: ec2.IVpc;
-  readonly kubeletVersionParameter: ssm.StringParameter;
   readonly kubernetesVersionParameter: ssm.StringParameter;
-  readonly containerRuntimeParameter: ssm.StringParameter;
   readonly clusterEndpointParameter: ssm.StringParameter;
   readonly joinTokenParameter: ssm.StringParameter;
   readonly clusterCaCertHashParameter: ssm.StringParameter;

@@ -10,9 +10,7 @@ export interface ServicesStackProps {
 export class ServicesStack extends Construct {
   public readonly workerJoinParameterName: string;
   public readonly controlPlaneJoinParameter: string;
-  public readonly kubeletVersionParameter: ssm.StringParameter;
   public readonly kubernetesVersionParameter: ssm.StringParameter;
-  public readonly containerRuntimeParameter: ssm.StringParameter;
   public readonly clusterEndpointParameter: ssm.StringParameter;
   public readonly joinTokenParameter: ssm.StringParameter;
   public readonly clusterCaCertHashParameter: ssm.StringParameter;
@@ -36,23 +34,11 @@ export class ServicesStack extends Construct {
     this.workerJoinParameterName = `/${props.clusterName}/kubeadm/worker-join`;
     this.controlPlaneJoinParameter = `/${props.clusterName}/kubeadm/control-plane-join`;
 
-    // Bootstrap configuration parameters
-    this.kubeletVersionParameter = new ssm.StringParameter(this, 'KubeletVersion', {
-      parameterName: `/${props.clusterName}/kubernetes/version`,
-      stringValue: '1.29.0',
-      description: 'Kubernetes version for cluster'
-    });
 
     this.kubernetesVersionParameter = new ssm.StringParameter(this, 'KubernetesVersion', {
       parameterName: `/${props.clusterName}/kubernetes/version`,
       stringValue: '1.29.0',
-      description: 'Kubernetes version for cluster'
-    });
-
-    this.containerRuntimeParameter = new ssm.StringParameter(this, 'ContainerRuntime', {
-      parameterName: `/${props.clusterName}/container/runtime`,
-      stringValue: 'containerd',
-      description: 'Container runtime for cluster nodes'
+      description: 'Kubernetes version for cluster init'
     });
 
     // Cluster communication parameters

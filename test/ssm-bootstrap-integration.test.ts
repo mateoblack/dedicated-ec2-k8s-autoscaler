@@ -11,11 +11,6 @@ describe('SSM Bootstrap Integration', () => {
       Type: 'String'
     });
 
-    template.hasResourceProperties('AWS::SSM::Parameter', {
-      Name: '/my-cluster/container/runtime',
-      Type: 'String'
-    });
-
     // Check cluster communication parameters
     template.hasResourceProperties('AWS::SSM::Parameter', {
       Name: '/my-cluster/cluster/endpoint',
