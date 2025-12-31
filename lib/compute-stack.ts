@@ -1212,6 +1212,9 @@ systemReserved:
   cpu: 100m
   memory: 128Mi
 maxPods: 110
+# Certificate rotation settings
+rotateCertificates: true
+serverTLSBootstrap: true
 EOF
 
 # Create kubelet systemd service using pre-installed binary
@@ -2448,6 +2451,106 @@ spec:
           value: $REGION
 EOF
 
+            # Install kubelet CSR auto-approver for server certificates
+            # This is needed when serverTLSBootstrap is enabled on kubelets
+            echo "Installing kubelet CSR auto-approver..."
+            cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubelet-csr-approver
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubelet-csr-approver
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["certificatesigningrequests"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["certificatesigningrequests/approval"]
+  verbs: ["update"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["signers"]
+  resourceNames: ["kubernetes.io/kubelet-serving"]
+  verbs: ["approve"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubelet-csr-approver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubelet-csr-approver
+subjects:
+- kind: ServiceAccount
+  name: kubelet-csr-approver
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubelet-csr-approver
+  namespace: kube-system
+  labels:
+    app: kubelet-csr-approver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubelet-csr-approver
+  template:
+    metadata:
+      labels:
+        app: kubelet-csr-approver
+    spec:
+      serviceAccountName: kubelet-csr-approver
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: approver
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Starting kubelet CSR auto-approver..."
+          while true; do
+            # Get pending CSRs for kubelet serving certificates
+            for csr in \$(kubectl get csr -o jsonpath='{range .items[?(@.status.conditions==null)]}{.metadata.name}{" "}{end}' 2>/dev/null); do
+              # Check if this is a kubelet serving CSR
+              SIGNER=\$(kubectl get csr "\$csr" -o jsonpath='{.spec.signerName}' 2>/dev/null)
+              REQUESTOR=\$(kubectl get csr "\$csr" -o jsonpath='{.spec.username}' 2>/dev/null)
+
+              if [ "\$SIGNER" = "kubernetes.io/kubelet-serving" ]; then
+                # Validate requestor is a node
+                if echo "\$REQUESTOR" | grep -q "^system:node:"; then
+                  echo "Approving kubelet serving CSR: \$csr (requestor: \$REQUESTOR)"
+                  kubectl certificate approve "\$csr" || true
+                else
+                  echo "Skipping CSR \$csr: requestor '\$REQUESTOR' is not a node"
+                fi
+              fi
+            done
+            sleep 30
+          done
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+EOF
+
             # Register this instance with load balancer target group (with retries)
             BOOTSTRAP_STAGE="lb-registration"
             TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
@@ -2839,6 +2942,148 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
         exit 1
     fi
 fi
+
+# Setup automatic certificate rotation for control plane
+echo "Setting up automatic certificate rotation..."
+
+# Create certificate renewal script
+cat > /usr/local/bin/k8s-cert-renewal.sh << 'CERTSCRIPT'
+#!/bin/bash
+# Kubernetes certificate renewal script
+# Checks certificate expiration and renews if needed
+
+set -e
+
+LOG_PREFIX="[k8s-cert-renewal]"
+RENEWAL_THRESHOLD_DAYS=30
+
+log() {
+    echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') $1"
+}
+
+# Check if kubeadm is available
+if ! command -v kubeadm &> /dev/null; then
+    log "kubeadm not found, skipping certificate renewal"
+    exit 0
+fi
+
+# Check if this is a control plane node
+if [ ! -f /etc/kubernetes/admin.conf ]; then
+    log "Not a control plane node, skipping"
+    exit 0
+fi
+
+# Get certificate expiration dates
+log "Checking certificate expiration dates..."
+CERTS_OUTPUT=$(kubeadm certs check-expiration 2>/dev/null || true)
+
+if [ -z "$CERTS_OUTPUT" ]; then
+    log "Could not check certificate expiration"
+    exit 0
+fi
+
+# Check if any certificate expires within threshold
+NEEDS_RENEWAL=false
+CURRENT_DATE=$(date +%s)
+THRESHOLD_SECONDS=$((RENEWAL_THRESHOLD_DAYS * 86400))
+
+# Parse the expiration output and check each certificate
+while IFS= read -r line; do
+    # Skip header lines
+    if echo "$line" | grep -qE "^CERTIFICATE|^----|^$|^CERTIFICATE AUTHORITY"; then
+        continue
+    fi
+
+    # Extract expiration date (format: Mon DD, YYYY HH:MM UTC)
+    EXPIRY=$(echo "$line" | awk '{print $2, $3, $4, $5, $6}' | sed 's/,//')
+    if [ -n "$EXPIRY" ]; then
+        EXPIRY_SECONDS=$(date -d "$EXPIRY" +%s 2>/dev/null || echo "0")
+        if [ "$EXPIRY_SECONDS" != "0" ]; then
+            TIME_LEFT=$((EXPIRY_SECONDS - CURRENT_DATE))
+            if [ $TIME_LEFT -lt $THRESHOLD_SECONDS ]; then
+                CERT_NAME=$(echo "$line" | awk '{print $1}')
+                log "Certificate $CERT_NAME expires in $((TIME_LEFT / 86400)) days - renewal needed"
+                NEEDS_RENEWAL=true
+            fi
+        fi
+    fi
+done <<< "$CERTS_OUTPUT"
+
+if [ "$NEEDS_RENEWAL" = "true" ]; then
+    log "Renewing all certificates..."
+
+    # Renew all certificates
+    if kubeadm certs renew all; then
+        log "Certificates renewed successfully"
+
+        # Restart control plane components
+        log "Restarting control plane components..."
+
+        # Move static pod manifests to trigger restart
+        if [ -d /etc/kubernetes/manifests ]; then
+            TEMP_DIR=$(mktemp -d)
+            mv /etc/kubernetes/manifests/*.yaml "$TEMP_DIR/" 2>/dev/null || true
+            sleep 10
+            mv "$TEMP_DIR"/*.yaml /etc/kubernetes/manifests/ 2>/dev/null || true
+            rmdir "$TEMP_DIR" 2>/dev/null || true
+            log "Control plane components restarted"
+        fi
+
+        # Wait for API server to be ready
+        log "Waiting for API server to be ready..."
+        for i in {1..30}; do
+            if kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes &>/dev/null; then
+                log "API server is ready"
+                break
+            fi
+            sleep 5
+        done
+
+        log "Certificate renewal completed successfully"
+    else
+        log "ERROR: Certificate renewal failed"
+        exit 1
+    fi
+else
+    log "All certificates are valid for more than $RENEWAL_THRESHOLD_DAYS days"
+fi
+CERTSCRIPT
+
+chmod +x /usr/local/bin/k8s-cert-renewal.sh
+
+# Create systemd service for certificate renewal
+cat > /etc/systemd/system/k8s-cert-renewal.service << 'CERTSVC'
+[Unit]
+Description=Kubernetes Certificate Renewal
+After=kubelet.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/k8s-cert-renewal.sh
+StandardOutput=journal
+StandardError=journal
+CERTSVC
+
+# Create systemd timer to run daily
+cat > /etc/systemd/system/k8s-cert-renewal.timer << 'CERTTIMER'
+[Unit]
+Description=Daily Kubernetes Certificate Renewal Check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+CERTTIMER
+
+# Enable and start the timer
+systemctl daemon-reload
+systemctl enable k8s-cert-renewal.timer
+systemctl start k8s-cert-renewal.timer
+
+echo "Certificate renewal timer configured"
 
 # Disable cleanup trap on successful completion
 trap - EXIT

@@ -201,7 +201,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (58 tests across 15 files):**
+**Test coverage (68 tests across 16 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -215,6 +215,7 @@ npm run test:code
 | `etcd-lifecycle-management.test.ts` | Lambda and lifecycle hooks |
 | `irsa-support.test.ts` | OIDC provider for IAM Roles for Service Accounts |
 | `cluster-autoscaler-tags.test.ts` | ASG tags for cluster-autoscaler discovery |
+| `certificate-rotation.test.ts` | Automatic certificate rotation configuration |
 
 ### Integration Tests (Requires AWS)
 
@@ -342,6 +343,62 @@ aws autoscaling set-desired-capacity --auto-scaling-group-name <cluster>-control
 
 ---
 
+## Certificate Rotation
+
+### Automatic Certificate Management
+
+The cluster automatically manages Kubernetes certificate rotation to prevent expiration:
+
+**Kubelet Certificates (Workers & Control Plane):**
+- Client certificates rotate automatically via kubelet's built-in rotation
+- Server certificates use bootstrap with automatic CSR approval
+- Settings: `rotateCertificates: true`, `serverTLSBootstrap: true`
+
+**Control Plane Certificates (kubeadm-managed):**
+- Daily check via systemd timer (`k8s-cert-renewal.timer`)
+- Certificates renewed when < 30 days until expiration
+- Control plane components automatically restarted after renewal
+
+### CSR Auto-Approver
+
+A lightweight controller runs on the cluster to approve kubelet serving certificate CSRs:
+
+- Only approves CSRs with signer `kubernetes.io/kubelet-serving`
+- Validates requestor is a legitimate node (`system:node:*`)
+- Runs as a deployment in `kube-system` namespace
+
+### Manual Certificate Operations
+
+```bash
+# Check certificate expiration dates
+kubeadm certs check-expiration
+
+# Manually renew all certificates
+kubeadm certs renew all
+
+# View renewal timer status
+systemctl status k8s-cert-renewal.timer
+
+# View renewal logs
+journalctl -u k8s-cert-renewal.service
+
+# Check pending CSRs
+kubectl get csr
+```
+
+### Certificate Lifecycle
+
+| Certificate Type | Rotation Method | Frequency |
+|-----------------|-----------------|-----------|
+| Kubelet client | Automatic (kubelet) | Before expiration |
+| Kubelet server | CSR + auto-approve | Before expiration |
+| API server, etcd, etc. | kubeadm renewal | 30 days before expiration |
+| CA certificates | Manual (10 year validity) | As needed |
+
+**Note:** CA certificates are not automatically rotated and have 10-year validity by default. Plan for manual rotation before expiration.
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
@@ -389,7 +446,8 @@ Key completed features:
 - ✅ Graceful node draining before termination
 - ✅ Automatic etcd backups to S3 (every 6 hours)
 - ✅ Automatic disaster recovery from backups
-- ✅ Comprehensive test coverage (58 tests)
+- ✅ Automatic certificate rotation (kubelet + control plane)
+- ✅ Comprehensive test coverage (68 tests)
 
 In progress:
 - Testing of edge cases and failure scenarios 
