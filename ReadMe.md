@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (114 tests across 20 files):**
+**Test coverage (149 tests across 21 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -217,6 +217,7 @@ npm run test:code
 | `database-stack.test.ts` | DynamoDB tables and S3 buckets |
 | `security-groups.test.ts` | Security group rules |
 | `etcd-lifecycle-management.test.ts` | Lambda and lifecycle hooks |
+| `etcd-backup-lambda.test.ts` | Scheduled etcd backup Lambda, S3 upload, scheduling |
 | `irsa-support.test.ts` | OIDC provider for IAM Roles for Service Accounts |
 | `cluster-autoscaler-tags.test.ts` | ASG tags for cluster-autoscaler discovery |
 | `certificate-rotation.test.ts` | Automatic certificate rotation configuration |
@@ -551,7 +552,7 @@ Key completed features:
 - ✅ HA system components (cluster-autoscaler, CSR-approver with 2 replicas)
 - ✅ Least privilege IAM policies (workers read-only, scoped resources)
 - ✅ API server audit logging (security events logged to /var/log/kubernetes/audit)
-- ✅ Comprehensive test coverage (114 tests)
+- ✅ Comprehensive test coverage (149 tests)
 
 In progress:
 - Testing of edge cases and failure scenarios 
