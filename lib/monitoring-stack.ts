@@ -170,7 +170,7 @@ export class MonitoringStack extends Construct {
         statistic: 'Average',
         period: cdk.Duration.seconds(300)
       }),
-      threshold: 240000, // 240 seconds (80% of 5 min timeout)
+      threshold: 480000, // 480 seconds (80% of 10 min timeout)
       evaluationPeriods: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING

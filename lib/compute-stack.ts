@@ -117,7 +117,11 @@ export class ComputeStack extends Construct {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'index.handler',
       code: lambda.Code.fromInline(this.createEtcdLifecycleLambdaCode(props.clusterName)),
-      timeout: cdk.Duration.minutes(5),
+      // 10 minute timeout for large nodes where etcd member removal may take longer:
+      // - Data replication to remaining members
+      // - Leader election if terminated node was leader
+      // - SSM command execution overhead
+      timeout: cdk.Duration.minutes(10),
       role: etcdLifecycleRole,
       environment: {
         CLUSTER_NAME: props.clusterName,
