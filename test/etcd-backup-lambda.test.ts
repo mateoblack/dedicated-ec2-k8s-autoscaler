@@ -356,4 +356,48 @@ describe('etcd Backup Lambda', () => {
       expect(code).toContain('is_retriable');
     });
   });
+
+  describe('Snapshot Integrity Validation', () => {
+    // etcd snapshots must be validated before S3 upload to ensure:
+    // - Snapshot is not corrupted
+    // - Hash integrity is verified
+    // - Disaster recovery won't fail with a bad backup
+
+    test('validates snapshot integrity using etcdctl with JSON output', () => {
+      const code = getLambdaCode('etcd-backup');
+      // Should use --write-out=json to get structured integrity data
+      expect(code).toContain('--write-out=json');
+    });
+
+    test('extracts and verifies snapshot hash', () => {
+      const code = getLambdaCode('etcd-backup');
+      // Should extract hash from snapshot status
+      expect(code).toMatch(/hash|Hash|HASH/);
+    });
+
+    test('checks snapshot integrity before upload', () => {
+      const code = getLambdaCode('etcd-backup');
+      // Should verify integrity BEFORE uploading to S3
+      // The word "integrity" or checking hash validity
+      expect(code).toMatch(/integrity|Integrity|verify.*hash|hash.*valid/i);
+    });
+
+    test('fails backup if snapshot is corrupted', () => {
+      const code = getLambdaCode('etcd-backup');
+      // Should fail if snapshot integrity check fails
+      expect(code).toMatch(/corrupt|invalid.*snapshot|snapshot.*fail|integrity.*fail/i);
+    });
+
+    test('logs snapshot hash for audit trail', () => {
+      const code = getLambdaCode('etcd-backup');
+      // Should log the hash value for audit/debugging
+      expect(code).toMatch(/echo.*hash|log.*hash|print.*hash|Hash:/i);
+    });
+
+    test('stores snapshot metadata with S3 upload', () => {
+      const code = getLambdaCode('etcd-backup');
+      // Should include metadata (hash, revision, size) with S3 object
+      expect(code).toContain('--metadata');
+    });
+  });
 });

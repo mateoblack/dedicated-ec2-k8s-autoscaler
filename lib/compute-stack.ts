@@ -1488,22 +1488,36 @@ fi
 echo "Creating etcd snapshot..."
 etcdctl snapshot save "$SNAPSHOT_FILE"
 
-# Verify snapshot
-echo "Verifying snapshot..."
-etcdctl snapshot status "$SNAPSHOT_FILE" --write-out=table
+# Verify snapshot integrity using JSON output for structured data
+echo "Verifying snapshot integrity..."
+SNAPSHOT_STATUS=$(etcdctl snapshot status "$SNAPSHOT_FILE" --write-out=json)
+
+# Extract hash from snapshot status for integrity verification
+SNAPSHOT_HASH=$(echo "$SNAPSHOT_STATUS" | grep -o '"hash":[0-9]*' | cut -d: -f2)
+SNAPSHOT_REVISION=$(echo "$SNAPSHOT_STATUS" | grep -o '"revision":[0-9]*' | cut -d: -f2)
+
+# Validate snapshot integrity - hash must be present and non-zero
+if [ -z "$SNAPSHOT_HASH" ] || [ "$SNAPSHOT_HASH" = "0" ]; then
+    echo "ERROR: Snapshot integrity check failed - invalid or corrupt snapshot"
+    echo "Snapshot status: $SNAPSHOT_STATUS"
+    exit 1
+fi
+
+echo "Snapshot integrity verified - Hash: $SNAPSHOT_HASH, Revision: $SNAPSHOT_REVISION"
 
 # Get snapshot size
 SNAPSHOT_SIZE=$(stat -c%s "$SNAPSHOT_FILE" 2>/dev/null || stat -f%z "$SNAPSHOT_FILE")
 echo "Snapshot size: $SNAPSHOT_SIZE bytes"
 
-# Upload to S3
+# Upload to S3 with metadata for audit trail
 echo "Uploading to S3..."
-aws s3 cp "$SNAPSHOT_FILE" "s3://{bucket_name}/{s3_key}" --region {region}
+aws s3 cp "$SNAPSHOT_FILE" "s3://{bucket_name}/{s3_key}" --region {region} \\
+    --metadata "hash=$SNAPSHOT_HASH,revision=$SNAPSHOT_REVISION,size=$SNAPSHOT_SIZE"
 
 # Cleanup
 rm -f "$SNAPSHOT_FILE"
 
-echo "BACKUP_SUCCESS key={s3_key} size=$SNAPSHOT_SIZE"
+echo "BACKUP_SUCCESS key={s3_key} size=$SNAPSHOT_SIZE hash=$SNAPSHOT_HASH"
 \"\"\"
 
     try:
