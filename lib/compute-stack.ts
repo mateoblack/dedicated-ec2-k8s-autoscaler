@@ -2302,6 +2302,40 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
     echo "RESTORE MODE DETECTED - Attempting disaster recovery"
     echo "Backup to restore: \$RESTORE_BACKUP"
 
+    # Check for stale restore lock before acquiring
+    # If a previous restore attempt crashed, the lock remains forever blocking DR
+    # Stale lock threshold: 30 minutes (1800 seconds) - restore should complete within this time
+    RESTORE_LOCK_TTL=1800
+
+    existing_lock=$(aws dynamodb get-item \\
+        --table-name "${clusterName}-etcd-members" \\
+        --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"restore-lock"}}' \\
+        --query 'Item' --output json --region $REGION 2>/dev/null || echo "{}")
+
+    if [ "\$existing_lock" != "{}" ] && [ "\$existing_lock" != "null" ] && [ -n "\$existing_lock" ]; then
+        # Extract lock details
+        lock_created=$(echo "\$existing_lock" | grep -o '"CreatedAt":{[^}]*}' | grep -o '"S":"[^"]*"' | cut -d'"' -f4)
+        lock_holder=$(echo "\$existing_lock" | grep -o '"InstanceId":{[^}]*}' | grep -o '"S":"[^"]*"' | cut -d'"' -f4)
+
+        if [ -n "\$lock_created" ]; then
+            # Calculate lock age
+            lock_epoch=$(date -d "\$lock_created" +%s 2>/dev/null || echo "0")
+            now_epoch=$(date +%s)
+            lock_age=\$((now_epoch - lock_epoch))
+
+            echo "Found existing restore lock: held by \$lock_holder, created at \$lock_created (age: \${lock_age}s)"
+
+            if [ "\$lock_age" -gt "\$RESTORE_LOCK_TTL" ]; then
+                echo "Stale restore lock detected (>\${RESTORE_LOCK_TTL}s old) - removing stale lock from \$lock_holder"
+                aws dynamodb delete-item \\
+                    --table-name "${clusterName}-etcd-members" \\
+                    --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"restore-lock"}}' \\
+                    --region $REGION 2>/dev/null || true
+                echo "Stale lock removed, proceeding with restore attempt"
+            fi
+        fi
+    fi
+
     # Try to acquire restore lock
     if aws dynamodb put-item \\
         --table-name "${clusterName}-etcd-members" \\

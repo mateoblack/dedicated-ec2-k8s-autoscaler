@@ -132,6 +132,51 @@ describe('Disaster Recovery', () => {
     });
   });
 
+  describe('Restore Lock TTL/Stale Lock Handling', () => {
+    // If a node crashes during restore, the lock remains in DynamoDB permanently
+    // This blocks all future restore attempts (disaster recovery becomes impossible)
+    // The solution is to check if existing locks are stale and override them
+
+    test('checks for existing restore lock before acquiring', () => {
+      // Should query for existing lock to check its age
+      expect(controlPlaneUserData).toContain('get-item');
+      expect(controlPlaneUserData).toMatch(/restore-lock.*get-item|get-item.*restore-lock/s);
+    });
+
+    test('retrieves CreatedAt timestamp from existing lock', () => {
+      // Need to check when the existing lock was created
+      expect(controlPlaneUserData).toContain('existing_lock');
+      expect(controlPlaneUserData).toContain('CreatedAt');
+    });
+
+    test('has stale lock threshold defined (30 minutes)', () => {
+      // Restore should complete within 30 minutes; locks older than this are stale
+      // 1800 seconds = 30 minutes
+      expect(controlPlaneUserData).toMatch(/1800|30.*minute|RESTORE_LOCK_TTL/i);
+    });
+
+    test('calculates age of existing restore lock', () => {
+      // Should calculate how old the lock is
+      expect(controlPlaneUserData).toContain('lock_age');
+    });
+
+    test('force-removes stale restore lock', () => {
+      // If lock is older than threshold, delete it before trying to acquire
+      expect(controlPlaneUserData).toMatch(/stale.*lock|lock.*stale|expired.*lock|lock.*expired/i);
+      expect(controlPlaneUserData).toContain('delete-item');
+    });
+
+    test('logs when overriding stale restore lock', () => {
+      // Should log that a stale lock was found and removed
+      expect(controlPlaneUserData).toMatch(/stale.*restore.*lock|removing.*stale|override.*lock/i);
+    });
+
+    test('includes lock holder instance ID in stale lock detection', () => {
+      // When removing stale lock, log which instance held it
+      expect(controlPlaneUserData).toContain('lock_holder');
+    });
+  });
+
   describe('Backup Download', () => {
     test('downloads backup from S3 bucket', () => {
       expect(controlPlaneUserData).toContain('aws s3 cp');
