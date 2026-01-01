@@ -294,11 +294,25 @@ export class IamStack extends Construct {
           "s3:ListBucket"
         ];
 
+    // Bootstrap bucket access
     role.addToPolicy(new iam.PolicyStatement({
       actions,
       resources: [
         `arn:aws:s3:::${clusterName}-bootstrap-*`,
         `arn:aws:s3:::${clusterName}-bootstrap-*/*`
+      ]
+    }));
+
+    // OIDC bucket access for IRSA token validation
+    // Workers need read access to validate service account tokens
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      resources: [
+        `arn:aws:s3:::${clusterName}-oidc-*`,
+        `arn:aws:s3:::${clusterName}-oidc-*/*`
       ]
     }));
   }

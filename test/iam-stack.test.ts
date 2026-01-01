@@ -72,7 +72,7 @@ test('IAM stack creates S3 permissions', () => {
           Action: [
             "s3:GetObject",
             "s3:PutObject",
-            "s3:DeleteObject", 
+            "s3:DeleteObject",
             "s3:ListBucket"
           ],
           Resource: [
@@ -83,4 +83,48 @@ test('IAM stack creates S3 permissions', () => {
       ])
     }
   });
+});
+
+test('Worker nodes have read access to OIDC bucket for IRSA token validation', () => {
+  const app = new cdk.App();
+  const stack = new K8sClusterStack(app, 'TestStack', {
+    clusterName: 'my-cluster',
+    env: { account: '123456789012', region: 'us-west-2' }
+  });
+  const template = Template.fromStack(stack);
+  const templateJson = template.toJSON();
+
+  // Find worker node role policies and verify OIDC bucket access
+  const resources = templateJson.Resources;
+  let foundWorkerOidcAccess = false;
+
+  for (const key of Object.keys(resources)) {
+    const resource = resources[key];
+    // Look for IAM policies attached to worker role
+    if (resource.Type === 'AWS::IAM::Policy') {
+      const policyName = resource.Properties?.PolicyName || '';
+      const roles = resource.Properties?.Roles || [];
+      const rolesStr = JSON.stringify(roles);
+
+      // Check if this policy is attached to a worker role
+      if (rolesStr.includes('worker') || rolesStr.includes('Worker')) {
+        const statements = resource.Properties?.PolicyDocument?.Statement || [];
+        for (const stmt of statements) {
+          const actions = stmt.Action || [];
+          const resourcesArr = stmt.Resource || [];
+          const resourcesStr = JSON.stringify(resourcesArr);
+
+          // Check for S3 read access to OIDC bucket
+          const hasGetObject = actions.includes('s3:GetObject');
+          const hasOidcBucket = resourcesStr.includes('oidc');
+
+          if (hasGetObject && hasOidcBucket) {
+            foundWorkerOidcAccess = true;
+          }
+        }
+      }
+    }
+  }
+
+  expect(foundWorkerOidcAccess).toBe(true);
 });
