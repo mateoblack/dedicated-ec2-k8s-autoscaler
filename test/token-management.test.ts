@@ -647,4 +647,62 @@ describe('Token Management', () => {
       expect(controlPlaneUserData).toContain('date -u');
     });
   });
+
+  describe('Certificate Key TTL/Expiration Security', () => {
+    // kubeadm certificate-key uploads expire after 2 hours by default
+    // The certificate-key stored in SSM must track its creation time
+    // and be validated/refreshed before use
+
+    test('stores certificate-key-updated timestamp alongside certificate key (initial)', () => {
+      // When the cluster is initialized, the certificate-key-updated timestamp
+      // should be stored right after the certificate-key
+      // Look for the pattern in the init section (not restore)
+      expect(controlPlaneUserData).toContain('/cluster/certificate-key-updated');
+    });
+
+    test('stores certificate-key-updated timestamp during token refresh', () => {
+      // When token refresh generates a new certificate-key, it should also
+      // update the timestamp
+      const tokenScriptStart = controlPlaneUserData.indexOf("token_script='");
+      expect(tokenScriptStart).toBeGreaterThan(-1);
+      const afterTokenScript = controlPlaneUserData.substring(tokenScriptStart, tokenScriptStart + 3000);
+      expect(afterTokenScript).toContain('certificate-key-updated');
+    });
+
+    test('has check_certificate_key_age function', () => {
+      // Similar to check_control_plane_token_age but for certificate key
+      // kubeadm certs expire in 2 hours, so we need to check age
+      expect(controlPlaneUserData).toContain('check_certificate_key_age()');
+    });
+
+    test('certificate key age check uses 2 hour threshold', () => {
+      // kubeadm certificate uploads expire after 2 hours (7200 seconds)
+      // The check should use a threshold less than 2 hours (e.g., 90 minutes = 5400 seconds)
+      // to ensure refresh happens before expiry
+      expect(controlPlaneUserData).toMatch(/certificate.*key.*age.*[57][04]00|certificate.*key.*90.*minutes|cert.*key.*1\.5.*hour/i);
+    });
+
+    test('validates certificate key age before control plane join', () => {
+      // Before a control plane node joins, it should check if the certificate key is fresh
+      // If the key is older than ~1.5 hours, request a refresh
+      expect(controlPlaneUserData).toContain('CERT_KEY_AGE=');
+      expect(controlPlaneUserData).toContain('check_certificate_key_age');
+    });
+
+    test('requests certificate key refresh when key is near expiry', () => {
+      // When certificate key is old (> 90 minutes), trigger a refresh
+      // This should be checked before kubeadm join --control-plane
+      expect(controlPlaneUserData).toMatch(/cert.*key.*expir|certificate.*key.*stale|cert.*key.*old/i);
+    });
+
+    test('certificate key refresh regenerates key with upload-certs', () => {
+      // The refresh should run kubeadm init phase upload-certs to regenerate
+      // This ensures fresh certificates are available for joining control planes
+      const tokenScriptStart = controlPlaneUserData.indexOf("token_script='");
+      expect(tokenScriptStart).toBeGreaterThan(-1);
+      const afterTokenScript = controlPlaneUserData.substring(tokenScriptStart, tokenScriptStart + 2000);
+      expect(afterTokenScript).toContain('upload-certs');
+      expect(afterTokenScript).toContain('certificate-key');
+    });
+  });
 });

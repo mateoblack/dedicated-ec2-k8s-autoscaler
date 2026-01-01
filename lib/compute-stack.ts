@@ -2278,6 +2278,7 @@ KUBEADMEOF
     retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
     retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
     retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"
+    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
     retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
 
     # Clear restore mode
@@ -2517,6 +2518,7 @@ KUBEADMCONFIG
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"
+            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
             retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
 
             # Register this node's etcd member in DynamoDB for lifecycle management
@@ -2929,6 +2931,8 @@ if [ -n "$NEW_TOKEN" ]; then
     if [ -n "$CERT_KEY" ]; then
         aws ssm put-parameter --name "/'${clusterName}'/cluster/certificate-key" \
             --value "$CERT_KEY" --type "SecureString" --overwrite --region '$REGION'
+        aws ssm put-parameter --name "/'${clusterName}'/cluster/certificate-key-updated" \
+            --value "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type "String" --overwrite --region '$REGION'
     fi
     echo "TOKEN_REFRESH_SUCCESS"
 else
@@ -3018,6 +3022,33 @@ check_control_plane_token_age() {
 
     local age_hours=\$(( (now_epoch - token_epoch) / 3600 ))
     echo "\$age_hours"
+}
+
+# Function to check if certificate key is expired (older than 90 minutes)
+# kubeadm certificate uploads expire after 2 hours by default
+# We use 90 minutes (5400 seconds) threshold to ensure refresh before expiry
+check_certificate_key_age() {
+    local cert_key_updated=$(aws ssm get-parameter \
+        --name "/${clusterName}/cluster/certificate-key-updated" \
+        --query 'Parameter.Value' --output text --region $REGION 2>/dev/null)
+
+    if [ -z "\$cert_key_updated" ] || [ "\$cert_key_updated" = "None" ]; then
+        # No timestamp means unknown age - consider it stale for safety
+        echo "unknown"
+        return
+    fi
+
+    # Convert to epoch (Linux date format)
+    local cert_epoch=$(date -d "\$cert_key_updated" +%s 2>/dev/null)
+    local now_epoch=$(date +%s)
+
+    if [ -z "\$cert_epoch" ]; then
+        echo "unknown"
+        return
+    fi
+
+    local age_minutes=\$(( (now_epoch - cert_epoch) / 60 ))
+    echo "\$age_minutes"
 }
 
 # Function to check etcd cluster health via an existing control plane node
@@ -3135,6 +3166,16 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
     if [ "\$TOKEN_AGE" != "unknown" ] && [ "\$TOKEN_AGE" -ge 20 ]; then
         echo "Token is \$TOKEN_AGE hours old (near expiry), requesting refresh..."
         request_new_control_plane_token || echo "WARNING: Token refresh failed, will try existing token"
+    fi
+
+    # Check certificate key age - kubeadm certs expire after 2 hours
+    # Use 90 minute threshold (5400 seconds) to refresh before expiry
+    CERT_KEY_AGE=$(check_certificate_key_age)
+    echo "Certificate key age: \$CERT_KEY_AGE minutes"
+
+    if [ "\$CERT_KEY_AGE" = "unknown" ] || [ "\$CERT_KEY_AGE" -ge 90 ]; then
+        echo "Certificate key is stale or expired (\$CERT_KEY_AGE minutes old), requesting refresh..."
+        request_new_control_plane_token || echo "WARNING: Certificate key refresh failed, will try existing key"
     fi
 
     # Get join information from SSM (with retries)

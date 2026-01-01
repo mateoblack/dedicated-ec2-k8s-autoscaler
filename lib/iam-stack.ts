@@ -191,14 +191,15 @@ export class IamStack extends Construct {
       resources: ['*']
     }));
 
-    // Modification actions scoped to cluster ASGs only
+    // Modification actions scoped to worker ASG only
+    // Control plane ASG should never be scaled by the cluster autoscaler
     this.clusterAutoscalerIrsaRole.addToPolicy(new iam.PolicyStatement({
       actions: [
         'autoscaling:SetDesiredCapacity',
         'autoscaling:TerminateInstanceInAutoScalingGroup'
       ],
       resources: [
-        `arn:aws:autoscaling:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:autoScalingGroup:*:autoScalingGroupName/${props.clusterName}-*`
+        `arn:aws:autoscaling:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:autoScalingGroup:*:autoScalingGroupName/${props.clusterName}-worker`
       ]
     }));
 

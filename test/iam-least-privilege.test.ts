@@ -192,7 +192,7 @@ describe('IAM Least Privilege', () => {
       });
     });
 
-    test('cluster autoscaler modification actions are scoped to cluster ASGs', () => {
+    test('cluster autoscaler modification actions are scoped to worker ASG', () => {
       template.hasResourceProperties('AWS::IAM::Policy', {
         PolicyDocument: {
           Statement: Match.arrayWith([
@@ -202,11 +202,39 @@ describe('IAM Least Privilege', () => {
                 'autoscaling:TerminateInstanceInAutoScalingGroup'
               ]),
               Effect: 'Allow',
-              Resource: Match.stringLikeRegexp('arn:aws:autoscaling:.*:autoScalingGroup:.*:autoScalingGroupName/test-cluster-.*')
+              Resource: Match.stringLikeRegexp('arn:aws:autoscaling:.*:autoScalingGroup:.*:autoScalingGroupName/test-cluster-worker')
             })
           ])
         }
       });
+    });
+
+    test('cluster autoscaler is scoped to worker ASG only, not control plane', () => {
+      // The autoscaler should ONLY be able to scale worker nodes
+      // It should NOT have permissions to scale control plane ASG
+      const policies = templateJson.Resources;
+      let foundAutoscalerPolicy = false;
+      let resourcePattern = '';
+
+      for (const key of Object.keys(policies)) {
+        const resource = policies[key];
+        if (resource.Type === 'AWS::IAM::Policy') {
+          const statements = resource.Properties?.PolicyDocument?.Statement || [];
+          for (const stmt of statements) {
+            const actions = stmt.Action || [];
+            if (actions.includes('autoscaling:SetDesiredCapacity')) {
+              foundAutoscalerPolicy = true;
+              resourcePattern = JSON.stringify(stmt.Resource);
+            }
+          }
+        }
+      }
+
+      expect(foundAutoscalerPolicy).toBe(true);
+      // Should explicitly reference worker ASG, not a wildcard that includes control-plane
+      expect(resourcePattern).toContain('worker');
+      // Should NOT use a wildcard pattern that could match control-plane
+      expect(resourcePattern).not.toMatch(/test-cluster-\*/);
     });
   });
 
