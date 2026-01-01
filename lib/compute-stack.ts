@@ -2047,9 +2047,14 @@ register_etcd_member() {
     fi
 
     # Parse member ID - look for member with matching name or peerURL containing our IP
-    local etcd_member_id=$(echo "$member_info" | grep -o '"ID":[0-9]*' | head -1 | cut -d: -f2)
+    # Extract decimal ID from JSON and convert to hex (etcdctl expects hex format)
+    local decimal_id=$(echo "$member_info" | grep -o '"ID":[0-9]*' | head -1 | cut -d: -f2)
+    local etcd_member_id=""
+    if [ -n "$decimal_id" ]; then
+        etcd_member_id=$(printf '%x' "$decimal_id" 2>/dev/null || echo "")
+    fi
 
-    # Try to find by peer URL matching our IP
+    # Try to find by peer URL matching our IP (Python already outputs hex)
     local member_by_ip=$(echo "$member_info" | python3 -c "
 import sys, json
 try:

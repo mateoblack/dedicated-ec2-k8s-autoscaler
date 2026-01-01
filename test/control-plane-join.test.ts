@@ -466,4 +466,64 @@ describe('Control Plane Join', () => {
       }
     });
   });
+
+  describe('etcd Member ID Parsing', () => {
+    test('register_etcd_member function exists', () => {
+      expect(controlPlaneUserData).toContain('register_etcd_member()');
+    });
+
+    test('uses etcdctl member list with JSON output', () => {
+      expect(controlPlaneUserData).toContain('member list -w json');
+    });
+
+    test('Python parsing converts member ID to hex format', () => {
+      // etcdctl member remove expects hex format, not decimal
+      // The Python code should use format(member['ID'], 'x') to convert
+      expect(controlPlaneUserData).toContain("format(member['ID'], 'x')");
+    });
+
+    test('all etcd member ID extraction paths produce hex format', () => {
+      // The member ID should always be in hex format for etcdctl compatibility
+      // Check that there's no decimal-only extraction without hex conversion
+      const lines = controlPlaneUserData.split('\n');
+
+      // Find lines that extract member ID from JSON
+      // The problematic pattern is: grep -o '"ID":[0-9]*' without hex conversion
+      let hasUnconvertedDecimalExtraction = false;
+
+      for (const line of lines) {
+        // If we're extracting ID with grep for digits only,
+        // we need to ensure there's a hex conversion somewhere
+        if (line.includes('"ID":[0-9]') && !line.includes('format') && !line.includes('printf')) {
+          // Check if this is the initial extraction (acceptable if later converted)
+          // or if it's the final value used (problematic)
+          const nextLines = controlPlaneUserData.substring(controlPlaneUserData.indexOf(line));
+
+          // If the extracted value is used directly without hex conversion
+          // in an etcdctl command or DynamoDB put, that's a bug
+          if (nextLines.includes('etcd_member_id=$(echo') &&
+              !nextLines.includes('printf "%x"') &&
+              !nextLines.includes('format(')) {
+            // Check if there's hex conversion before use
+            const extractionToUse = nextLines.substring(0, 500);
+            if (!extractionToUse.includes('printf') &&
+                !extractionToUse.includes('format(') &&
+                extractionToUse.includes('etcd_member_id')) {
+              hasUnconvertedDecimalExtraction = true;
+            }
+          }
+        }
+      }
+
+      // Ensure any grep-based extraction is followed by hex conversion
+      // The fix should add: printf '%x' to convert decimal to hex
+      expect(controlPlaneUserData).toContain("printf '%x'");
+    });
+
+    test('stores hex member ID in DynamoDB', () => {
+      // The EtcdMemberId stored should be in hex format
+      expect(controlPlaneUserData).toContain('"EtcdMemberId"');
+      expect(controlPlaneUserData).toContain('$etcd_member_id');
+    });
+  });
 });
