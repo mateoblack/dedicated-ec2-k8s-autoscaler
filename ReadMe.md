@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (533 tests across 26 files):**
+**Test coverage (631 tests across 27 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -224,6 +224,7 @@ npm run test:code
 | `disaster-recovery.test.ts` | Disaster recovery restore flow, backup download, re-initialization |
 | `irsa-support.test.ts` | OIDC provider for IAM Roles for Service Accounts |
 | `oidc-setup.test.ts` | JWKS generation, S3 upload, thumbprint update for IRSA |
+| `token-management.test.ts` | Token generation, SSM updates, token refresh, age checks |
 | `cluster-autoscaler-tags.test.ts` | ASG tags for cluster-autoscaler discovery |
 | `certificate-rotation.test.ts` | Automatic certificate rotation configuration |
 | `monitoring-stack.test.ts` | CloudWatch alarms and dashboard |
