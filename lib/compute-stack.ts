@@ -2850,6 +2850,46 @@ fi
 request_new_control_plane_token() {
     echo "Requesting new join token from existing control plane node..."
 
+    # Try to acquire token refresh lock to prevent race conditions
+    # Multiple nodes might try to refresh simultaneously - only one should proceed
+    local lock_acquired=false
+    if aws dynamodb put-item \
+        --table-name "${clusterName}-bootstrap-lock" \
+        --item '{"LockName":{"S":"token-refresh-lock"},"InstanceId":{"S":"'\$INSTANCE_ID'"},"CreatedAt":{"S":"'"\$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}}' \
+        --condition-expression "attribute_not_exists(LockName)" \
+        --region $REGION 2>/dev/null; then
+        lock_acquired=true
+        echo "Acquired token refresh lock"
+    else
+        # Check if token was recently updated - another node may have just refreshed
+        local token_updated=$(aws ssm get-parameter \
+            --name "/${clusterName}/cluster/join-token-updated" \
+            --query 'Parameter.Value' --output text --region $REGION 2>/dev/null)
+        if [ -n "\$token_updated" ] && [ "\$token_updated" != "None" ]; then
+            local token_epoch=\$(date -d "\$token_updated" +%s 2>/dev/null || echo "0")
+            local now_epoch=\$(date +%s)
+            local age_seconds=\$((now_epoch - token_epoch))
+            # If token was updated in last 60 seconds, skip refresh
+            if [ \$age_seconds -lt 60 ]; then
+                echo "Token was recently updated (\${age_seconds}s ago), skip refresh"
+                return 0
+            fi
+        fi
+        echo "Could not acquire lock, another node may be refreshing"
+        return 1
+    fi
+
+    # Cleanup function to release lock
+    release_token_refresh_lock() {
+        if [ "\$lock_acquired" = "true" ]; then
+            aws dynamodb delete-item \
+                --table-name "${clusterName}-bootstrap-lock" \
+                --key '{"LockName":{"S":"token-refresh-lock"}}' \
+                --region $REGION 2>/dev/null || true
+            echo "Released token refresh lock"
+        fi
+    }
+
     # Find a healthy control plane instance (not ourselves)
     CONTROL_PLANE_INSTANCE=$(aws ec2 describe-instances \
         --filters "Name=tag:aws:autoscaling:groupName,Values=${clusterName}-control-plane" \
@@ -2859,14 +2899,26 @@ request_new_control_plane_token() {
 
     if [ -z "\$CONTROL_PLANE_INSTANCE" ] || [ "\$CONTROL_PLANE_INSTANCE" = "None" ]; then
         echo "ERROR: No other healthy control plane instance found"
+        release_token_refresh_lock
         return 1
     fi
 
     echo "Found control plane instance: \$CONTROL_PLANE_INSTANCE"
 
     # Create script to generate new token on control plane (with certificate-key for control plane join)
+    # The script also acquires a lock on the target node to prevent concurrent token generation
     local token_script='
 export KUBECONFIG=/etc/kubernetes/admin.conf
+# Acquire lock on this node to prevent concurrent token generation
+if ! aws dynamodb put-item \
+    --table-name "'${clusterName}'-bootstrap-lock" \
+    --item '"'"'{"LockName":{"S":"token-gen-lock"},"CreatedAt":{"S":"'"'"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"'"'"}}'"'"' \
+    --condition-expression "attribute_not_exists(LockName)" \
+    --region '$REGION' 2>/dev/null; then
+    echo "TOKEN_REFRESH_LOCKED"
+    exit 0
+fi
+# Generate new token
 NEW_TOKEN=$(kubeadm token create --ttl 24h 2>/dev/null)
 CERT_KEY=$(kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1)
 if [ -n "$NEW_TOKEN" ]; then
@@ -2882,6 +2934,11 @@ if [ -n "$NEW_TOKEN" ]; then
 else
     echo "TOKEN_REFRESH_FAILED"
 fi
+# Release the lock
+aws dynamodb delete-item \
+    --table-name "'${clusterName}'-bootstrap-lock" \
+    --key '"'"'{"LockName":{"S":"token-gen-lock"}}'"'"' \
+    --region '$REGION' 2>/dev/null || true
 '
 
     # Execute via SSM Run Command
@@ -2894,6 +2951,7 @@ fi
 
     if [ -z "\$command_id" ] || [ "\$command_id" = "None" ]; then
         echo "ERROR: Failed to send SSM command"
+        release_token_refresh_lock
         return 1
     fi
 
@@ -2919,18 +2977,22 @@ fi
 
             if echo "\$output" | grep -q "TOKEN_REFRESH_SUCCESS"; then
                 echo "Token refresh successful"
+                release_token_refresh_lock
                 return 0
             else
                 echo "Token refresh command did not succeed"
+                release_token_refresh_lock
                 return 1
             fi
         elif [ "\$status" = "Failed" ] || [ "\$status" = "Cancelled" ] || [ "\$status" = "TimedOut" ]; then
             echo "SSM command failed with status: \$status"
+            release_token_refresh_lock
             return 1
         fi
     done
 
     echo "Timeout waiting for token refresh"
+    release_token_refresh_lock
     return 1
 }
 

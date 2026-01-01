@@ -211,6 +211,72 @@ describe('Token Management', () => {
     });
   });
 
+  describe('Token Refresh Race Condition Prevention', () => {
+    test('token refresh function acquires DynamoDB lock', () => {
+      // The request_new_control_plane_token function should acquire a lock
+      // to prevent multiple nodes from refreshing simultaneously
+      // Look for the lock acquisition pattern near the token refresh function
+      const tokenRefreshFn = controlPlaneUserData.match(/request_new_control_plane_token\(\)[\s\S]*?^}/m);
+      expect(tokenRefreshFn).not.toBeNull();
+      if (tokenRefreshFn) {
+        const fnBody = tokenRefreshFn[0];
+        // Should acquire a lock using DynamoDB before refreshing
+        expect(fnBody).toContain('bootstrap-lock');
+        expect(fnBody).toContain('token-refresh-lock');
+      }
+    });
+
+    test('token refresh uses condition expression to prevent concurrent locks', () => {
+      // The lock acquisition should use put-item with condition expression
+      const tokenRefreshFn = controlPlaneUserData.match(/request_new_control_plane_token\(\)[\s\S]*?^}/m);
+      expect(tokenRefreshFn).not.toBeNull();
+      if (tokenRefreshFn) {
+        const fnBody = tokenRefreshFn[0];
+        expect(fnBody).toContain('attribute_not_exists');
+      }
+    });
+
+    test('token refresh checks if token was recently updated before refreshing', () => {
+      // Before refreshing, check if another node already refreshed recently
+      // to avoid unnecessary refreshes
+      const tokenRefreshFn = controlPlaneUserData.match(/request_new_control_plane_token\(\)[\s\S]*?^}/m);
+      expect(tokenRefreshFn).not.toBeNull();
+      if (tokenRefreshFn) {
+        const fnBody = tokenRefreshFn[0];
+        // Should check token age or last update time
+        expect(fnBody).toContain('join-token-updated');
+        expect(fnBody).toContain('skip');
+      }
+    });
+
+    test('token refresh releases lock after completion', () => {
+      // Lock should be released after token is stored
+      const tokenRefreshFn = controlPlaneUserData.match(/request_new_control_plane_token\(\)[\s\S]*?^}/m);
+      expect(tokenRefreshFn).not.toBeNull();
+      if (tokenRefreshFn) {
+        const fnBody = tokenRefreshFn[0];
+        expect(fnBody).toContain('delete-item');
+        expect(fnBody).toContain('token-refresh-lock');
+      }
+    });
+
+    test('token refresh script includes lock handling', () => {
+      // The token_script that runs on the control plane should also handle locking
+      // The script contains complex quote escaping, so we check that the
+      // dynamodb put-item with lock is present in the user data after token_script
+      const tokenScriptStart = controlPlaneUserData.indexOf("token_script='");
+      expect(tokenScriptStart).toBeGreaterThan(-1);
+
+      // Find the portion of user data containing the token_script
+      const afterTokenScript = controlPlaneUserData.substring(tokenScriptStart, tokenScriptStart + 2000);
+
+      // Should include lock acquisition via dynamodb
+      expect(afterTokenScript).toContain('token-gen-lock');
+      expect(afterTokenScript).toContain('attribute_not_exists');
+      expect(afterTokenScript).toContain('delete-item');
+    });
+  });
+
   describe('Token Refresh SSM Updates', () => {
     test('updates join-token in SSM', () => {
       // Check the refresh script updates the token
