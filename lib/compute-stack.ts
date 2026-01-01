@@ -2602,7 +2602,40 @@ OIDCEOF
 
                 # Use openssl to get the key components and convert to JWK
                 # Get the modulus (n) and exponent (e) in base64url format
-                MODULUS=$(openssl rsa -pubin -in $SA_SIGNING_KEY_FILE -modulus -noout 2>/dev/null | cut -d= -f2 | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
+                #
+                # Robust extraction using Python (more portable than xxd)
+                # Python's binascii/codecs is available on all K8s nodes
+                MODULUS_HEX=$(openssl rsa -pubin -in $SA_SIGNING_KEY_FILE -modulus -noout 2>&1)
+                if [ $? -ne 0 ] || [ -z "\$MODULUS_HEX" ]; then
+                    echo "ERROR: Failed to extract modulus from SA public key"
+                    echo "OpenSSL output: \$MODULUS_HEX"
+                fi
+
+                # Extract just the hex value after Modulus=
+                MODULUS_HEX_CLEAN=$(echo "\$MODULUS_HEX" | cut -d= -f2)
+
+                # Check if xxd is available, use Python as fallback
+                if command -v xxd >/dev/null 2>&1; then
+                    # xxd is available - use traditional method
+                    MODULUS=$(echo "\$MODULUS_HEX_CLEAN" | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
+                else
+                    # xxd not available - use Python for hex to base64url conversion
+                    echo "xxd not found, using Python for modulus conversion"
+                    MODULUS=$(python3 -c "
+import base64
+import codecs
+hex_str = '\$MODULUS_HEX_CLEAN'
+binary = codecs.decode(hex_str, 'hex')
+b64 = base64.urlsafe_b64encode(binary).decode('utf-8').rstrip('=')
+print(b64)
+")
+                fi
+
+                # Validate modulus is not empty
+                if [ -z "\$MODULUS" ]; then
+                    echo "ERROR: Modulus extraction failed - MODULUS is empty"
+                    echo "This will cause IRSA token validation to fail"
+                fi
 
                 # RSA public exponent is typically 65537 (AQAB in base64url)
                 EXPONENT="AQAB"
@@ -2625,6 +2658,12 @@ OIDCEOF
     ]
 }
 JWKSEOF
+
+                # Validate JWK structure before upload
+                if ! python3 -c "import json; j=json.load(open('/tmp/keys.json')); assert 'keys' in j and len(j['keys']) > 0 and j['keys'][0].get('n')" 2>/dev/null; then
+                    echo "ERROR: Generated keys.json has invalid JWK structure"
+                    cat /tmp/keys.json
+                fi
 
                 # Upload OIDC documents to S3 (with retries)
                 echo "Uploading OIDC discovery documents to S3..."

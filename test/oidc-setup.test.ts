@@ -479,4 +479,46 @@ describe('OIDC Setup', () => {
       expect(controlPlaneUserData).toContain('cut -c1-16');
     });
   });
+
+  describe('Robust JWK Modulus Extraction', () => {
+    // The modulus extraction pipeline is fragile:
+    // - xxd may not be installed on all systems
+    // - 2>/dev/null hides errors
+    // - No validation of the output
+    // - Silent failures produce empty/malformed JWKS
+
+    test('validates modulus is not empty before using', () => {
+      // After extracting modulus, should check it's not empty
+      expect(controlPlaneUserData).toMatch(/if.*-z.*MODULUS|if.*-n.*MODULUS|\[ -z "\$MODULUS" \]|\[ -n "\$MODULUS" \]/);
+    });
+
+    test('has fallback method using Python when xxd unavailable', () => {
+      // Python's binascii module is more reliable than xxd for hex->binary conversion
+      // Should have a fallback that uses Python
+      expect(controlPlaneUserData).toContain('python3');
+      expect(controlPlaneUserData).toMatch(/binascii|codecs\.decode|bytes\.fromhex/);
+    });
+
+    test('logs error when modulus extraction fails', () => {
+      // Should log a meaningful error if modulus extraction fails
+      expect(controlPlaneUserData).toMatch(/modulus.*fail|fail.*modulus|extract.*fail|MODULUS.*error/i);
+    });
+
+    test('checks if xxd is available before using it', () => {
+      // Should check command availability before depending on it
+      expect(controlPlaneUserData).toMatch(/command -v xxd|which xxd|type xxd/);
+    });
+
+    test('uses Python-based extraction as primary or fallback method', () => {
+      // Python approach is more portable:
+      // python3 -c "import base64; ..." is available on all K8s nodes
+      expect(controlPlaneUserData).toContain('python3 -c');
+      expect(controlPlaneUserData).toContain('base64');
+    });
+
+    test('validates JWK structure before upload', () => {
+      // Should validate the generated keys.json has valid structure
+      expect(controlPlaneUserData).toMatch(/jq.*keys\.json|python.*json.*keys\.json|validate.*jwk|jwk.*valid/i);
+    });
+  });
 });
