@@ -204,13 +204,15 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (284 tests across 23 files):**
+**Test coverage (458 tests across 25 files):**
 
 | Test File | Coverage |
 |-----------|----------|
 | `ssm-control-plane-access.test.ts` | SSM Session Manager access to control plane nodes |
 | `control-plane-launch-template.test.ts` | Control plane EC2 configuration |
+| `control-plane-join.test.ts` | Control plane join command, certificate retrieval, token refresh |
 | `worker-launch-template.test.ts` | Worker node EC2 configuration |
+| `worker-node-bootstrap.test.ts` | Worker node SSM parameter retrieval, join verification |
 | `iam-stack.test.ts` | IAM roles, KMS, and permissions |
 | `iam-least-privilege.test.ts` | Least privilege IAM policy scoping |
 | `network-stack.test.ts` | VPC, subnets, and load balancer |
