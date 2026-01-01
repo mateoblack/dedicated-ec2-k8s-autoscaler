@@ -159,6 +159,7 @@ export class NetworkStack extends Construct {
 
     // Target group for control plane nodes
     this.controlPlaneTargetGroup = new elbv2.NetworkTargetGroup(this, 'ControlPlaneTargetGroup', {
+      targetGroupName: `${props.clusterName}-control-plane-tg`,
       port: 6443,
       protocol: elbv2.Protocol.TCP,
       targetType: elbv2.TargetType.INSTANCE,

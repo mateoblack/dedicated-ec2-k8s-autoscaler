@@ -41,8 +41,9 @@ test('Network stack creates control plane load balancer', () => {
     Scheme: 'internal'
   });
 
-  // Test target group
+  // Test target group with explicit name (required for bootstrap script discovery)
   template.hasResourceProperties('AWS::ElasticLoadBalancingV2::TargetGroup', {
+    Name: 'test-cluster-control-plane-tg',
     Port: 6443,
     Protocol: 'TCP',
     TargetType: 'instance'
