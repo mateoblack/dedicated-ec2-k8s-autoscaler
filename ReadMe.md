@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (828 tests across 29 files):**
+**Test coverage (837 tests across 29 files):**
 
 | Test File | Coverage |
 |-----------|----------|

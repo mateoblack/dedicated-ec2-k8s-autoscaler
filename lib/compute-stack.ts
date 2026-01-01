@@ -1175,6 +1175,35 @@ fi
 # Get join token (might be freshly refreshed)
 JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
 
+# Validate SSM parameters are initialized (not placeholder values)
+validate_ssm_params() {
+    local has_error=false
+
+    if [ "$CLUSTER_ENDPOINT" = "PENDING_INITIALIZATION" ] || [ "$CLUSTER_ENDPOINT" = "placeholder" ]; then
+        echo "ERROR: Cluster endpoint not initialized. Cluster may not be ready."
+        has_error=true
+    fi
+
+    if [ "$CA_CERT_HASH" = "PENDING_INITIALIZATION" ] || [ "$CA_CERT_HASH" = "placeholder" ]; then
+        echo "ERROR: CA certificate hash not initialized. Cluster may not be ready."
+        has_error=true
+    fi
+
+    if [ "$JOIN_TOKEN" = "PENDING_INITIALIZATION" ] || [ "$JOIN_TOKEN" = "placeholder" ]; then
+        echo "ERROR: Join token not initialized. Cluster may not be ready."
+        has_error=true
+    fi
+
+    if [ "$has_error" = "true" ]; then
+        echo "ERROR: SSM parameters contain uninitialized values."
+        echo "This usually means the control plane has not completed initialization."
+        echo "Check if the first control plane node is healthy and has completed kubeadm init."
+        exit 1
+    fi
+}
+
+validate_ssm_params
+
 echo "Kubernetes Version: $KUBERNETES_VERSION"
 echo "Cluster Endpoint: $CLUSTER_ENDPOINT"
 
@@ -3040,6 +3069,38 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
     CA_CERT_HASH=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION")
     CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION")
     CERT_KEY=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION" || echo "")
+
+    # Validate SSM parameters are initialized (not placeholder values)
+    validate_join_params() {
+        local has_error=false
+
+        if [ "\$CLUSTER_ENDPOINT" = "PENDING_INITIALIZATION" ] || [ "\$CLUSTER_ENDPOINT" = "placeholder" ]; then
+            echo "ERROR: Cluster endpoint not initialized."
+            has_error=true
+        fi
+
+        if [ "\$CA_CERT_HASH" = "PENDING_INITIALIZATION" ] || [ "\$CA_CERT_HASH" = "placeholder" ]; then
+            echo "ERROR: CA certificate hash not initialized."
+            has_error=true
+        fi
+
+        if [ "\$JOIN_TOKEN" = "PENDING_INITIALIZATION" ] || [ "\$JOIN_TOKEN" = "placeholder" ]; then
+            echo "ERROR: Join token not initialized."
+            has_error=true
+        fi
+
+        if [ "\$has_error" = "true" ]; then
+            echo "ERROR: SSM parameters contain uninitialized values."
+            echo "The first control plane node may not have completed initialization."
+            return 1
+        fi
+        return 0
+    }
+
+    if ! validate_join_params; then
+        echo "Cannot join cluster - SSM parameters not ready. Exiting."
+        exit 1
+    fi
 
     # Function to attempt control plane join
     attempt_control_plane_join() {

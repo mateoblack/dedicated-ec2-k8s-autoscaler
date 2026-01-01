@@ -42,21 +42,23 @@ export class ServicesStack extends Construct {
     });
 
     // Cluster communication parameters
+    // These are initialized with PENDING_INITIALIZATION and updated by the first control plane node
+    // Bootstrap scripts validate these values before attempting to join
     this.clusterEndpointParameter = new ssm.StringParameter(this, 'ClusterEndpoint', {
       parameterName: `/${props.clusterName}/cluster/endpoint`,
-      stringValue: 'placeholder',
+      stringValue: 'PENDING_INITIALIZATION',
       description: 'Kubernetes API server endpoint URL'
     });
 
     this.joinTokenParameter = new ssm.StringParameter(this, 'JoinToken', {
       parameterName: `/${props.clusterName}/cluster/join-token`,
-      stringValue: 'placeholder',
-      description: 'Kubeadm join token for nodes'
+      stringValue: 'PENDING_INITIALIZATION',
+      description: 'Kubeadm join token for nodes (updated to SecureString by bootstrap)'
     });
 
     this.clusterCaCertHashParameter = new ssm.StringParameter(this, 'ClusterCaCertHash', {
       parameterName: `/${props.clusterName}/cluster/ca-cert-hash`,
-      stringValue: 'placeholder',
+      stringValue: 'PENDING_INITIALIZATION',
       description: 'Cluster CA certificate hash for secure join'
     });
 
