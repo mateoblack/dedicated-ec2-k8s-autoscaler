@@ -1882,8 +1882,8 @@ except:
     if [ "\$CLUSTER_LOCK_HELD" = "true" ]; then
         echo "Releasing cluster initialization lock..."
         aws dynamodb delete-item \
-            --table-name "${clusterName}-etcd-members" \
-            --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"cluster-init-lock"}}' \
+            --table-name "${clusterName}-bootstrap-lock" \
+            --key '{"LockName":{"S":"cluster-init"}}' \
             --region $REGION 2>/dev/null || true
     fi
 
@@ -2343,9 +2343,9 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
 
     # Try to acquire cluster initialization lock using DynamoDB
     if aws dynamodb put-item \\
-        --table-name "${clusterName}-etcd-members" \\
-        --item '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"cluster-init-lock"},"InstanceId":{"S":"'$INSTANCE_ID'"},"Status":{"S":"INITIALIZING"},"CreatedAt":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' \\
-        --condition-expression "attribute_not_exists(ClusterId)" \\
+        --table-name "${clusterName}-bootstrap-lock" \\
+        --item '{"LockName":{"S":"cluster-init"},"InstanceId":{"S":"'$INSTANCE_ID'"},"Status":{"S":"INITIALIZING"},"CreatedAt":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' \\
+        --condition-expression "attribute_not_exists(LockName)" \\
         --region $REGION 2>/dev/null; then
 
         CLUSTER_LOCK_HELD=true
@@ -2810,8 +2810,8 @@ EOF
             echo "Cluster initialization failed!"
             # Release the lock
             aws dynamodb delete-item \\
-                --table-name "${clusterName}-etcd-members" \\
-                --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"cluster-init-lock"}}' \\
+                --table-name "${clusterName}-bootstrap-lock" \\
+                --key '{"LockName":{"S":"cluster-init"}}' \\
                 --region $REGION
             exit 1
         fi
