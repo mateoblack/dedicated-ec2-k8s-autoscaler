@@ -126,6 +126,17 @@ export class NetworkStack extends Construct {
       description: 'Allow API server access from worker nodes'
     });
 
+    // CP SG allows TCP 6443 from VPC CIDR for NLB health checks
+    // NLB health checks originate from the NLB's private IP addresses within the VPC
+    new ec2.CfnSecurityGroupIngress(this, 'ControlPlaneNlbHealthCheck', {
+      groupId: this.controlPlaneSecurityGroup.securityGroupId,
+      cidrIp: this.vpc.vpcCidrBlock,
+      ipProtocol: 'tcp',
+      fromPort: 6443,
+      toPort: 6443,
+      description: 'Allow NLB health checks from VPC CIDR'
+    });
+
     // Worker security group rules
     // Worker SG allows all traffic from itself (using CfnSecurityGroupIngress to avoid circular dependency)
     new ec2.CfnSecurityGroupIngress(this, 'WorkerSelfIngress', {

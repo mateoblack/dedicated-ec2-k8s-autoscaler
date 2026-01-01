@@ -35,6 +35,18 @@ describe('Security Groups', () => {
     });
   });
 
+  test('Control plane security group allows NLB health checks from VPC CIDR', () => {
+    const { template } = createTestStack();
+    // CidrIp is dynamically resolved from VPC CIDR block
+    template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', {
+      IpProtocol: 'tcp',
+      FromPort: 6443,
+      ToPort: 6443,
+      CidrIp: Match.anyValue(),
+      Description: 'Allow NLB health checks from VPC CIDR'
+    });
+  });
+
   test('Worker security group allows self traffic', () => {
     const { template } = createTestStack();
     template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', {
