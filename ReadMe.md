@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (631 tests across 27 files):**
+**Test coverage (736 tests across 28 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -219,6 +219,7 @@ npm run test:code
 | `database-stack.test.ts` | DynamoDB tables and S3 buckets |
 | `security-groups.test.ts` | Security group rules |
 | `etcd-lifecycle-management.test.ts` | Lambda and lifecycle hooks |
+| `before-terminate-lifecycle.test.ts` | Node drain, etcd member removal, quorum safety |
 | `etcd-backup-lambda.test.ts` | Scheduled etcd backup Lambda, S3 upload, scheduling |
 | `cluster-health-lambda.test.ts` | Cluster health monitoring, restore triggering, recovery logic |
 | `disaster-recovery.test.ts` | Disaster recovery restore flow, backup download, re-initialization |
