@@ -120,4 +120,41 @@ describe('Cluster Init Lock', () => {
       expect(controlPlaneUserData).toContain('CreatedAt');
     });
   });
+
+  describe('Lock Release on SSM Parameter Update Failure', () => {
+    // If SSM parameter updates fail AFTER kubeadm init succeeds,
+    // the lock must still be released to prevent permanent blocking
+
+    test('has function to release init lock explicitly', () => {
+      // Should have a dedicated function to release the lock
+      expect(controlPlaneUserData).toContain('release_init_lock');
+    });
+
+    test('release function deletes lock from DynamoDB', () => {
+      // The release function should actually delete from DynamoDB
+      expect(controlPlaneUserData).toMatch(/release_init_lock.*delete-item|delete-item.*release_init_lock/s);
+    });
+
+    test('calls release function when setting CLUSTER_LOCK_HELD to false', () => {
+      // When CLUSTER_LOCK_HELD is set to false, the lock should actually be deleted
+      // Not just the variable set - must delete from DynamoDB
+      expect(controlPlaneUserData).toMatch(/CLUSTER_LOCK_HELD=false.*release_init_lock|release_init_lock.*CLUSTER_LOCK_HELD=false/s);
+    });
+
+    test('handles SSM parameter update failures with lock release', () => {
+      // If retry_command fails for SSM, the lock should be released
+      expect(controlPlaneUserData).toMatch(/ssm.*fail.*release|release.*ssm.*fail|param.*fail.*release/i);
+    });
+
+    test('exits with error code when critical SSM updates fail', () => {
+      // Script should exit with non-zero when SSM parameters cannot be set
+      // This ensures cleanup_on_failure is triggered
+      expect(controlPlaneUserData).toMatch(/ssm.*exit 1|param.*fail.*exit|critical.*exit/i);
+    });
+
+    test('logs when releasing lock due to failure', () => {
+      // Should log that lock is being released due to failure
+      expect(controlPlaneUserData).toMatch(/releas.*lock.*fail|fail.*releas.*lock/i);
+    });
+  });
 });

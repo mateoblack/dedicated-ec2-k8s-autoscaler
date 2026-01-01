@@ -1930,6 +1930,20 @@ except:
 # Set trap for cleanup on error
 trap cleanup_on_failure EXIT
 
+# Function to release the cluster init lock explicitly
+# This ensures the lock is deleted from DynamoDB, not just the variable cleared
+release_init_lock() {
+    if [ "\$CLUSTER_LOCK_HELD" = "true" ]; then
+        echo "Releasing cluster initialization lock from DynamoDB..."
+        aws dynamodb delete-item \
+            --table-name "${clusterName}-bootstrap-lock" \
+            --key '{"LockName":{"S":"cluster-init"}}' \
+            --region $REGION 2>/dev/null || true
+        CLUSTER_LOCK_HELD=false
+        echo "Cluster init lock released"
+    fi
+}
+
 # Retry helper function with exponential backoff
 # Usage: retry_command <command>
 # Returns: 0 on success, 1 on failure after all retries
@@ -2565,13 +2579,51 @@ KUBEADMCONFIG
             CA_CERT_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
             
             # Store cluster information in SSM (with retries)
-            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION"
-            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"
-            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
-            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
-            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"
-            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
-            retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
+            # Critical SSM parameters - if these fail, we must release the lock and exit
+            BOOTSTRAP_STAGE="ssm-params"
+            SSM_FAILED=false
+
+            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION"; then
+                echo "ERROR: Failed to store cluster endpoint in SSM"
+                SSM_FAILED=true
+            fi
+
+            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"; then
+                echo "ERROR: Failed to store join token in SSM"
+                SSM_FAILED=true
+            fi
+
+            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"; then
+                echo "ERROR: Failed to store join token timestamp in SSM"
+                SSM_FAILED=true
+            fi
+
+            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"; then
+                echo "ERROR: Failed to store CA cert hash in SSM"
+                SSM_FAILED=true
+            fi
+
+            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"; then
+                echo "ERROR: Failed to store certificate key in SSM"
+                SSM_FAILED=true
+            fi
+
+            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"; then
+                echo "ERROR: Failed to store certificate key timestamp in SSM"
+                SSM_FAILED=true
+            fi
+
+            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"; then
+                echo "ERROR: Failed to store initialized flag in SSM"
+                SSM_FAILED=true
+            fi
+
+            # Check if any critical SSM parameter updates failed
+            if [ "\$SSM_FAILED" = "true" ]; then
+                echo "CRITICAL: SSM parameter updates failed - releasing lock due to failure"
+                release_init_lock
+                exit 1
+            fi
 
             # Register this node's etcd member in DynamoDB for lifecycle management
             BOOTSTRAP_STAGE="etcd-registration"
@@ -2906,7 +2958,7 @@ EOF
             fi
 
             # Release the init lock since we're done
-            CLUSTER_LOCK_HELD=false
+            release_init_lock
             BOOTSTRAP_STAGE="complete"
 
             echo "First control plane node setup completed successfully!"
