@@ -225,6 +225,9 @@ export class ComputeStack extends Construct {
 
     props.kmsKey.grantEncryptDecrypt(etcdBackupRole);
 
+    // Grant read access to etcd member table for instance lookups
+    props.etcdMemberTable.grantReadData(etcdBackupRole);
+
     // Scheduled rule to run backup every 6 hours
     new events.Rule(this, 'EtcdBackupSchedule', {
       ruleName: `${props.clusterName}-etcd-backup-schedule`,
@@ -288,6 +291,9 @@ export class ComputeStack extends Construct {
     }));
 
     props.kmsKey.grantDecrypt(clusterHealthRole);
+
+    // Grant read access to etcd member table for cluster state queries
+    props.etcdMemberTable.grantReadData(clusterHealthRole);
 
     // Scheduled rule to check cluster health every 5 minutes
     new events.Rule(this, 'ClusterHealthSchedule', {

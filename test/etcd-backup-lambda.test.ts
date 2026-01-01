@@ -184,6 +184,30 @@ describe('etcd Backup Lambda', () => {
         }
       });
     });
+
+    test('Lambda role can read from etcd-members DynamoDB table', () => {
+      // The backup Lambda needs to read etcd member information for instance lookups
+      const resources = templateJson.Resources;
+      let foundDynamoDBReadPolicy = false;
+
+      for (const key of Object.keys(resources)) {
+        const resource = resources[key];
+        if (resource.Type === 'AWS::IAM::Policy' && key.includes('EtcdBackup')) {
+          const statements = resource.Properties?.PolicyDocument?.Statement || [];
+          for (const stmt of statements) {
+            const actions = stmt.Action || [];
+            const hasGetItem = actions.includes('dynamodb:GetItem') || actions.includes('dynamodb:Query');
+            const resource = JSON.stringify(stmt.Resource || '');
+            const referencesEtcdTable = resource.includes('etcd-members') || resource.includes('EtcdMemberTable');
+
+            if (hasGetItem && referencesEtcdTable) {
+              foundDynamoDBReadPolicy = true;
+            }
+          }
+        }
+      }
+      expect(foundDynamoDBReadPolicy).toBe(true);
+    });
   });
 
   describe('Backup Scheduling', () => {

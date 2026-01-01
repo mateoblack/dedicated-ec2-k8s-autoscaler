@@ -196,6 +196,30 @@ describe('Cluster Health Lambda', () => {
         }
       });
     });
+
+    test('Lambda role can read from etcd-members DynamoDB table', () => {
+      // The health Lambda needs to read etcd member information for cluster state
+      const resources = templateJson.Resources;
+      let foundDynamoDBReadPolicy = false;
+
+      for (const key of Object.keys(resources)) {
+        const resource = resources[key];
+        if (resource.Type === 'AWS::IAM::Policy' && key.includes('ClusterHealth')) {
+          const statements = resource.Properties?.PolicyDocument?.Statement || [];
+          for (const stmt of statements) {
+            const actions = stmt.Action || [];
+            const hasGetItem = actions.includes('dynamodb:GetItem') || actions.includes('dynamodb:Query');
+            const resource = JSON.stringify(stmt.Resource || '');
+            const referencesEtcdTable = resource.includes('etcd-members') || resource.includes('EtcdMemberTable');
+
+            if (hasGetItem && referencesEtcdTable) {
+              foundDynamoDBReadPolicy = true;
+            }
+          }
+        }
+      }
+      expect(foundDynamoDBReadPolicy).toBe(true);
+    });
   });
 
   describe('Health Check Scheduling', () => {
