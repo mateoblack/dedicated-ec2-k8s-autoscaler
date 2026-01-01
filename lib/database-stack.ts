@@ -15,6 +15,7 @@ export class DatabaseStack extends Construct {
   public readonly bootstrapBucket: s3.Bucket;
   public readonly oidcBucket: s3.Bucket;
   public readonly etcdBackupBucket: s3.Bucket;
+  public readonly accessLogsBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id);
@@ -87,6 +88,23 @@ export class DatabaseStack extends Construct {
       }]
     });
 
+    // S3 bucket for server access logs (audit logging)
+    // Used to track all requests to security-sensitive buckets like OIDC
+    this.accessLogsBucket = new s3.Bucket(this, "AccessLogsBucket", {
+      bucketName: `${props.clusterName}-access-logs-${this.node.addr.slice(-8)}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: false, // Log files don't need versioning
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      lifecycleRules: [{
+        id: 'DeleteOldLogs',
+        enabled: true,
+        expiration: cdk.Duration.days(90) // Keep access logs for 90 days
+      }]
+    });
+
     // S3 bucket for OIDC discovery documents (IRSA)
     // This bucket must allow public read for AWS STS to validate tokens
     // Bucket name must be deterministic so IAM stack can construct the correct OIDC URL
@@ -99,10 +117,17 @@ export class DatabaseStack extends Construct {
         blockPublicPolicy: false, // Allow public bucket policy for OIDC discovery
         restrictPublicBuckets: false
       }),
-      versioned: false,
+      versioned: true, // Enable versioning to protect against accidental deletion/corruption
       enforceSSL: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true
+      autoDeleteObjects: true,
+      serverAccessLogsBucket: this.accessLogsBucket,
+      serverAccessLogsPrefix: 'oidc-bucket-logs/',
+      lifecycleRules: [{
+        id: 'DeleteOldVersions',
+        enabled: true,
+        noncurrentVersionExpiration: cdk.Duration.days(30)
+      }]
     });
 
     // Allow public read access to OIDC discovery documents

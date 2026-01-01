@@ -217,9 +217,9 @@ describe('Database Stack', () => {
   });
 
   describe('S3 Buckets', () => {
-    test('creates three S3 buckets', () => {
-      // Bootstrap bucket + OIDC bucket + etcd backup bucket
-      template.resourceCountIs('AWS::S3::Bucket', 3);
+    test('creates four S3 buckets', () => {
+      // Bootstrap bucket + OIDC bucket + etcd backup bucket + access logs bucket
+      template.resourceCountIs('AWS::S3::Bucket', 4);
     });
 
     test('bootstrap bucket exists with correct name pattern', () => {
@@ -347,18 +347,73 @@ describe('Database Stack', () => {
       });
     });
 
-    test('OIDC bucket does not have versioning enabled', () => {
-      // OIDC bucket should not be versioned - find it and check
+    test('OIDC bucket has versioning enabled for security', () => {
+      // OIDC bucket contains public keys for IRSA token validation
+      // Versioning protects against accidental deletion/corruption
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        BucketName: Match.stringLikeRegexp('test-cluster-oidc-.*'),
+        VersioningConfiguration: {
+          Status: 'Enabled'
+        }
+      });
+    });
+  });
+
+  describe('S3 Server Access Logging', () => {
+    test('access logging bucket exists', () => {
+      // A dedicated bucket for storing S3 access logs
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        BucketName: Match.stringLikeRegexp('test-cluster-access-logs-.*')
+      });
+    });
+
+    test('access logging bucket blocks all public access', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        BucketName: Match.stringLikeRegexp('test-cluster-access-logs-.*'),
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true
+        }
+      });
+    });
+
+    test('OIDC bucket has server access logging enabled', () => {
+      // Server access logging tracks all requests to the OIDC bucket
+      // This is important for security auditing of IRSA token validation
       const resources = templateJson.Resources;
+      let foundOidcLogging = false;
+
       for (const key of Object.keys(resources)) {
         const resource = resources[key];
         if (resource.Type === 'AWS::S3::Bucket' &&
             resource.Properties?.BucketName?.includes('oidc')) {
-          // Should not have VersioningConfiguration or Status should be undefined
-          const versioningStatus = resource.Properties?.VersioningConfiguration?.Status;
-          expect(versioningStatus).not.toBe('Enabled');
+          const loggingConfig = resource.Properties?.LoggingConfiguration;
+          if (loggingConfig && loggingConfig.DestinationBucketName) {
+            foundOidcLogging = true;
+          }
         }
       }
+      expect(foundOidcLogging).toBe(true);
+    });
+
+    test('OIDC bucket logs have prefix for organization', () => {
+      const resources = templateJson.Resources;
+      let foundLogPrefix = false;
+
+      for (const key of Object.keys(resources)) {
+        const resource = resources[key];
+        if (resource.Type === 'AWS::S3::Bucket' &&
+            resource.Properties?.BucketName?.includes('oidc')) {
+          const loggingConfig = resource.Properties?.LoggingConfiguration;
+          if (loggingConfig?.LogFilePrefix) {
+            // Prefix should identify the source bucket
+            foundLogPrefix = loggingConfig.LogFilePrefix.includes('oidc');
+          }
+        }
+      }
+      expect(foundLogPrefix).toBe(true);
     });
   });
 
