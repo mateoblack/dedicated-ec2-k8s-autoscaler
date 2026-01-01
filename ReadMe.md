@@ -204,7 +204,7 @@ Run infrastructure tests without AWS credentials:
 npm run test:code
 ```
 
-**Test coverage (736 tests across 28 files):**
+**Test coverage (791 tests across 29 files):**
 
 | Test File | Coverage |
 |-----------|----------|
@@ -231,6 +231,7 @@ npm run test:code
 | `monitoring-stack.test.ts` | CloudWatch alarms and dashboard |
 | `ha-system-components.test.ts` | High availability for system components |
 | `audit-logging.test.ts` | API server audit logging configuration |
+| `nlb-target-management.test.ts` | NLB target registration/deregistration, target group discovery |
 
 ### Integration Tests (Requires AWS)
 
