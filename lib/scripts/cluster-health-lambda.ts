@@ -4,14 +4,18 @@
  */
 
 import { getPythonLoggingSetup } from './python-logging';
+import { getPythonMetricsSetup } from './python-metrics';
 
 export function createClusterHealthLambdaCode(clusterName: string, backupBucket: string): string {
   return `
 import json
 import boto3
 import os
+import time
 
 \${getPythonLoggingSetup()}
+
+\${getPythonMetricsSetup()}
 
 ec2 = boto3.client('ec2')
 autoscaling = boto3.client('autoscaling')
@@ -32,6 +36,8 @@ def handler(event, context):
     cluster_name = os.environ['CLUSTER_NAME']
     region = os.environ['REGION']
     threshold = int(os.environ.get('UNHEALTHY_THRESHOLD', '3'))
+    start_time = time.time() * 1000  # For duration tracking
+    metrics = create_metrics_logger('K8sCluster/Health', context)
 
     try:
         logger.info("Running health check", extra={'cluster_name': cluster_name, 'component': 'health-check'})
@@ -42,6 +48,13 @@ def handler(event, context):
 
         # Get current failure count from SSM
         failure_count = get_failure_count(cluster_name, region)
+
+        # Emit health metrics on every invocation
+        try:
+            metrics.put_metric('HealthyControlPlaneInstances', healthy_count, COUNT)
+            metrics.put_metric('ConsecutiveHealthFailures', failure_count, COUNT)
+        except Exception:
+            pass
 
         if healthy_count == 0:
             # No healthy instances - increment failure counter
@@ -55,6 +68,13 @@ def handler(event, context):
                     logger.error("TRIGGERING AUTO-RECOVERY", extra={'failure_count': failure_count, 'backup_key': latest_backup})
                     logger.info("Latest backup available", extra={'backup_key': latest_backup})
                     trigger_restore_mode(cluster_name, region, latest_backup)
+                    try:
+                        metrics.put_metric('AutoRecoveryTriggered', 1, COUNT)
+                        duration_ms = time.time() * 1000 - start_time
+                        metrics.put_metric('HealthCheckDuration', duration_ms, MILLISECONDS)
+                        metrics.flush()
+                    except Exception:
+                        pass
                     return {
                         'statusCode': 200,
                         'body': f'Restore mode triggered, backup: {latest_backup}'
@@ -62,12 +82,24 @@ def handler(event, context):
                 else:
                     logger.error("No backup available for restore", extra={'status': 'critical'})
                     set_failure_count(cluster_name, region, failure_count)
+                    try:
+                        duration_ms = time.time() * 1000 - start_time
+                        metrics.put_metric('HealthCheckDuration', duration_ms, MILLISECONDS)
+                        metrics.flush()
+                    except Exception:
+                        pass
                     return {
                         'statusCode': 500,
                         'body': 'Cluster unhealthy but no backup available'
                     }
             else:
                 set_failure_count(cluster_name, region, failure_count)
+                try:
+                    duration_ms = time.time() * 1000 - start_time
+                    metrics.put_metric('HealthCheckDuration', duration_ms, MILLISECONDS)
+                    metrics.flush()
+                except Exception:
+                    pass
                 return {
                     'statusCode': 200,
                     'body': f'Unhealthy, failure count: {failure_count}/{threshold}'
@@ -81,6 +113,17 @@ def handler(event, context):
                 # Clear restore mode if it was set
                 clear_restore_mode(cluster_name, region)
 
+                try:
+                    metrics.put_metric('ClusterRecovered', 1, COUNT)
+                except Exception:
+                    pass
+
+            try:
+                duration_ms = time.time() * 1000 - start_time
+                metrics.put_metric('HealthCheckDuration', duration_ms, MILLISECONDS)
+                metrics.flush()
+            except Exception:
+                pass
             return {
                 'statusCode': 200,
                 'body': f'Healthy, {healthy_count} instances'
@@ -88,6 +131,12 @@ def handler(event, context):
 
     except Exception as e:
         logger.error("Health check error", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
+        try:
+            duration_ms = time.time() * 1000 - start_time
+            metrics.put_metric('HealthCheckDuration', duration_ms, MILLISECONDS)
+            metrics.flush()
+        except Exception:
+            pass
         return {'statusCode': 500, 'body': f'Error: {str(e)}'}
 
 
