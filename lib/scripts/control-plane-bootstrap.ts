@@ -160,9 +160,9 @@ if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
 fi
 
 # Get cluster configuration from SSM (with retries)
-KUBERNETES_VERSION=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION")
-CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION" || echo "")
-CLUSTER_INITIALIZED=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION" || echo "false")
+KUBERNETES_VERSION=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION)
+CLUSTER_ENDPOINT=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION || echo "")
+CLUSTER_INITIALIZED=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION || echo "false")
 
 echo "Instance ID: $INSTANCE_ID"
 echo "Private IP: $PRIVATE_IP"
@@ -289,7 +289,7 @@ restore_from_backup() {
 
     # Download backup from S3
     local backup_file="/tmp/etcd-restore.db"
-    if ! retry_command "aws s3 cp s3://${etcdBackupBucketName}/\$backup_key \$backup_file --region $REGION"; then
+    if ! retry_command aws s3 cp s3://${etcdBackupBucketName}/\$backup_key \$backup_file --region $REGION; then
         echo "ERROR: Failed to download backup from S3"
         return 1
     fi
@@ -445,16 +445,16 @@ KUBEADMEOF
     CA_CERT_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
 
     # Update SSM parameters
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION"
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value "\$JOIN_TOKEN" --type 'SecureString' --overwrite --region $REGION
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value "sha256:\$CA_CERT_HASH" --type 'String' --overwrite --region $REGION
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value "\$CERT_KEY" --type 'SecureString' --overwrite --region $REGION
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION
 
     # Clear restore mode
-    retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/restore-mode' --value 'false' --type 'String' --overwrite --region $REGION"
+    retry_command aws ssm put-parameter --name '/${clusterName}/cluster/restore-mode' --value 'false' --type 'String' --overwrite --region $REGION
 
     # Register etcd member
     if register_etcd_member; then
@@ -471,8 +471,8 @@ KUBEADMEOF
 }
 
 # Check for restore mode (disaster recovery)
-RESTORE_MODE=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/restore-mode' --query 'Parameter.Value' --output text --region $REGION" || echo "false")
-RESTORE_BACKUP=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/restore-backup' --query 'Parameter.Value' --output text --region $REGION" || echo "")
+RESTORE_MODE=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/restore-mode' --query 'Parameter.Value' --output text --region $REGION || echo "false")
+RESTORE_BACKUP=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/restore-backup' --query 'Parameter.Value' --output text --region $REGION || echo "")
 
 if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
     echo "RESTORE MODE DETECTED - Attempting disaster recovery"
@@ -525,9 +525,9 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
             echo "Disaster recovery completed successfully!"
 
             # Register with load balancer
-            TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+            TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
             if [ -n "\$TARGET_GROUP_ARN" ]; then
-                retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"
+                retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION
                 LB_REGISTERED=true
             fi
 
@@ -727,37 +727,37 @@ KUBEADMCONFIG
             BOOTSTRAP_STAGE="ssm-params"
             SSM_FAILED=false
 
-            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION"; then
+            if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION; then
                 echo "ERROR: Failed to store cluster endpoint in SSM"
                 SSM_FAILED=true
             fi
 
-            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value '\$JOIN_TOKEN' --type 'SecureString' --overwrite --region $REGION"; then
+            if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value "\$JOIN_TOKEN" --type 'SecureString' --overwrite --region $REGION; then
                 echo "ERROR: Failed to store join token in SSM"
                 SSM_FAILED=true
             fi
 
-            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"; then
+            if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION; then
                 echo "ERROR: Failed to store join token timestamp in SSM"
                 SSM_FAILED=true
             fi
 
-            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value 'sha256:\$CA_CERT_HASH' --type 'String' --overwrite --region $REGION"; then
+            if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value "sha256:\$CA_CERT_HASH" --type 'String' --overwrite --region $REGION; then
                 echo "ERROR: Failed to store CA cert hash in SSM"
                 SSM_FAILED=true
             fi
 
-            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value '\$CERT_KEY' --type 'SecureString' --overwrite --region $REGION"; then
+            if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value "\$CERT_KEY" --type 'SecureString' --overwrite --region $REGION; then
                 echo "ERROR: Failed to store certificate key in SSM"
                 SSM_FAILED=true
             fi
 
-            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value '\$(date -u +%Y-%m-%dT%H:%M:%SZ)' --type 'String' --overwrite --region $REGION"; then
+            if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION; then
                 echo "ERROR: Failed to store certificate key timestamp in SSM"
                 SSM_FAILED=true
             fi
 
-            if ! retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION"; then
+            if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION; then
                 echo "ERROR: Failed to store initialized flag in SSM"
                 SSM_FAILED=true
             fi
@@ -877,8 +877,8 @@ JWKSEOF
 
                 # Upload OIDC documents to S3 (with retries)
                 echo "Uploading OIDC discovery documents to S3..."
-                retry_command "aws s3 cp /tmp/openid-configuration.json s3://\$OIDC_BUCKET/.well-known/openid-configuration --content-type application/json --region $REGION"
-                retry_command "aws s3 cp /tmp/keys.json s3://\$OIDC_BUCKET/keys.json --content-type application/json --region $REGION"
+                retry_command aws s3 cp /tmp/openid-configuration.json s3://\$OIDC_BUCKET/.well-known/openid-configuration --content-type application/json --region $REGION
+                retry_command aws s3 cp /tmp/keys.json s3://\$OIDC_BUCKET/keys.json --content-type application/json --region $REGION
 
                 # Get the S3 TLS certificate thumbprint for the AWS OIDC provider
                 # AWS S3 uses Amazon Trust Services certificates
@@ -897,10 +897,10 @@ JWKSEOF
 
                 # Update the AWS OIDC provider with the correct thumbprint (with retries)
                 echo "Updating AWS OIDC provider thumbprint..."
-                retry_command "aws iam update-open-id-connect-provider-thumbprint --open-id-connect-provider-arn \$OIDC_PROVIDER_ARN --thumbprint-list \$S3_THUMBPRINT --region $REGION"
+                retry_command aws iam update-open-id-connect-provider-thumbprint --open-id-connect-provider-arn \$OIDC_PROVIDER_ARN --thumbprint-list \$S3_THUMBPRINT --region $REGION
 
                 # Store OIDC issuer URL in SSM for reference (with retries)
-                retry_command "aws ssm put-parameter --name '/${clusterName}/oidc/issuer' --value '\$OIDC_ISSUER' --type 'String' --overwrite --region $REGION"
+                retry_command aws ssm put-parameter --name '/${clusterName}/oidc/issuer' --value "\$OIDC_ISSUER" --type 'String' --overwrite --region $REGION
 
                 echo "OIDC setup completed successfully!"
             else
@@ -1092,9 +1092,9 @@ EOF
 
             # Register this instance with load balancer target group (with retries)
             BOOTSTRAP_STAGE="lb-registration"
-            TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+            TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
             if [ -n "\$TARGET_GROUP_ARN" ]; then
-                if retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"; then
+                if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                     LB_REGISTERED=true
                 fi
             else
@@ -1466,10 +1466,10 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
     fi
 
     # Get join information from SSM (with retries)
-    JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
-    CA_CERT_HASH=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION")
-    CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION")
-    CERT_KEY=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION" || echo "")
+    JOIN_TOKEN=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION)
+    CA_CERT_HASH=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION)
+    CLUSTER_ENDPOINT=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION)
+    CERT_KEY=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION || echo "")
 
     # Validate SSM parameters are initialized (not placeholder values)
     validate_join_params() {
@@ -1547,9 +1547,9 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
 
             # Register this instance with load balancer target group (with retries)
             BOOTSTRAP_STAGE="lb-registration"
-            TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+            TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
             if [ -n "\$TARGET_GROUP_ARN" ]; then
-                if retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"; then
+                if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                     LB_REGISTERED=true
                 fi
             else
@@ -1564,8 +1564,8 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
             BOOTSTRAP_STAGE="token-refresh"
             if request_new_control_plane_token; then
                 # Get the new token
-                NEW_JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
-                NEW_CERT_KEY=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION" || echo "")
+                NEW_JOIN_TOKEN=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION)
+                NEW_CERT_KEY=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION || echo "")
 
                 if [ -n "\$NEW_JOIN_TOKEN" ]; then
                     echo "Got fresh token, retrying join..."
@@ -1588,9 +1588,9 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
                         fi
 
                         BOOTSTRAP_STAGE="lb-registration"
-                        TARGET_GROUP_ARN=$(retry_command_output "aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION")
+                        TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
                         if [ -n "\$TARGET_GROUP_ARN" ]; then
-                            if retry_command "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION"; then
+                            if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                                 LB_REGISTERED=true
                             fi
                         fi

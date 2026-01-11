@@ -86,7 +86,7 @@ echo "Private IP: $PRIVATE_IP"
 # Wait for cluster to be initialized
 echo "Waiting for cluster to be initialized..."
 for i in {1..60}; do
-    CLUSTER_INITIALIZED=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION" || echo "false")
+    CLUSTER_INITIALIZED=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION || echo "false")
     if [ "$CLUSTER_INITIALIZED" = "true" ]; then
         echo "Cluster is initialized, proceeding with worker join"
         break
@@ -217,9 +217,9 @@ check_token_age() {
 }
 
 # Get configuration from SSM parameters (with retries)
-KUBERNETES_VERSION=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION")
-CLUSTER_ENDPOINT=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION")
-CA_CERT_HASH=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION")
+KUBERNETES_VERSION=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION)
+CLUSTER_ENDPOINT=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION)
+CA_CERT_HASH=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/ca-cert-hash' --query 'Parameter.Value' --output text --region $REGION)
 
 # Check token age and refresh if needed
 TOKEN_AGE=$(check_token_age)
@@ -235,7 +235,7 @@ if [ "$TOKEN_AGE" != "unknown" ] && [ "$TOKEN_AGE" -ge 20 ]; then
 fi
 
 # Get join token (might be freshly refreshed)
-JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
+JOIN_TOKEN=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION)
 
 # Validate SSM parameters are initialized (not placeholder values)
 validate_ssm_params() {
@@ -361,7 +361,7 @@ if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ];
         # Try to get a fresh token
         if request_new_token; then
             # Get the new token
-            NEW_JOIN_TOKEN=$(retry_command_output "aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION")
+            NEW_JOIN_TOKEN=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION)
 
             if [ -n "$NEW_JOIN_TOKEN" ] && [ "$NEW_JOIN_TOKEN" != "$JOIN_TOKEN" ]; then
                 echo "Got fresh token, retrying join..."
