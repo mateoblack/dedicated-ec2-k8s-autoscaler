@@ -53,20 +53,22 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 09-01: Bash structured logging module
-- [ ] 09-02: Bootstrap scripts migration
-- [ ] 09-03: Python structured logging module
-- [ ] 09-04: Lambda functions migration
+- [x] 09-02: Bootstrap scripts migration
+- [x] 09-03: Python structured logging module
+- [x] 09-04: Lambda functions migration
 
 #### Phase 10: CloudWatch Metrics
 
 **Goal**: Custom metrics emission from bootstrap scripts and Lambda for monitoring dashboards
 **Depends on**: Phase 9
-**Research**: Likely (CloudWatch PutMetricData API patterns, custom metrics best practices)
-**Research topics**: CloudWatch PutMetricData API, metric dimensions design, embedded metric format vs API calls
-**Plans**: TBD
+**Research**: Complete (EMF for Lambda, PutMetricData CLI for bash)
+**Plans**: 4
 
 Plans:
-- [ ] 10-01: TBD (run /gsd:plan-phase 10 to break down)
+- [ ] 10-01: Python EMF metrics module
+- [ ] 10-02: IAM permissions + Bash metrics module
+- [ ] 10-03: Lambda integration (EMF metrics)
+- [ ] 10-04: Bootstrap integration + Dashboard widgets
 
 #### Phase 11: Error Messages
 
@@ -114,8 +116,8 @@ Phases execute in numeric order: 1 → 2 → ... → 8 → 9 → 10 → 11 → 1
 | 6. Lambda Unit Tests | v1.0 | 2/2 | Complete | 2026-01-11 |
 | 7. Script Linting | v1.0 | 1/1 | Complete | 2026-01-11 |
 | 8. Documentation | v1.0 | 1/1 | Complete | 2026-01-11 |
-| 9. Structured Logging | v1.1 | 1/4 | In progress | - |
-| 10. CloudWatch Metrics | v1.1 | 0/? | Not started | - |
+| 9. Structured Logging | v1.1 | 4/4 | Complete | 2026-01-11 |
+| 10. CloudWatch Metrics | v1.1 | 0/4 | Planned | - |
 | 11. Error Messages | v1.1 | 0/? | Not started | - |
 | 12. Graceful Recovery | v1.1 | 0/? | Not started | - |
 | 13. Tracing | v1.1 | 0/? | Not started | - |
