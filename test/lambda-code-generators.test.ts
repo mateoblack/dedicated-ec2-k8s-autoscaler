@@ -1,0 +1,392 @@
+/**
+ * Unit tests for Lambda code generator functions.
+ *
+ * These tests validate that the Lambda code generators produce correct Python
+ * code with proper parameter interpolation, expected handler functions,
+ * error classes, and retry patterns.
+ */
+
+import { createEtcdLifecycleLambdaCode } from '../lib/scripts/etcd-lifecycle-lambda';
+import { createEtcdBackupLambdaCode } from '../lib/scripts/etcd-backup-lambda';
+import { createClusterHealthLambdaCode } from '../lib/scripts/cluster-health-lambda';
+
+describe('Lambda Code Generators', () => {
+  describe('createEtcdLifecycleLambdaCode', () => {
+    const clusterName = 'test-cluster';
+    let code: string;
+
+    beforeAll(() => {
+      code = createEtcdLifecycleLambdaCode(clusterName);
+    });
+
+    describe('Python structure', () => {
+      test('contains handler function', () => {
+        expect(code).toContain('def handler(event, context):');
+      });
+
+      test('contains required imports', () => {
+        expect(code).toContain('import json');
+        expect(code).toContain('import boto3');
+        expect(code).toContain('import os');
+        expect(code).toContain('import logging');
+        expect(code).toContain('import time');
+        expect(code).toContain('from datetime import datetime');
+      });
+
+      test('contains AWS client initializations', () => {
+        expect(code).toContain("dynamodb = boto3.resource('dynamodb')");
+        expect(code).toContain("ec2 = boto3.client('ec2')");
+        expect(code).toContain("autoscaling = boto3.client('autoscaling')");
+        expect(code).toContain("ssm = boto3.client('ssm')");
+      });
+
+      test('configures logging', () => {
+        expect(code).toContain('logger = logging.getLogger()');
+        expect(code).toContain('logger.setLevel(logging.INFO)');
+      });
+    });
+
+    describe('error classes', () => {
+      test('defines NodeDrainError class', () => {
+        expect(code).toContain('class NodeDrainError(Exception):');
+        expect(code).toContain('"""Raised when node drain fails"""');
+      });
+
+      test('defines EtcdRemovalError class', () => {
+        expect(code).toContain('class EtcdRemovalError(Exception):');
+        expect(code).toContain('"""Raised when etcd member removal fails"""');
+      });
+
+      test('defines QuorumRiskError class', () => {
+        expect(code).toContain('class QuorumRiskError(Exception):');
+        expect(code).toContain('"""Raised when removal would risk etcd quorum"""');
+      });
+
+      test('error classes have is_retriable attribute', () => {
+        expect(code).toContain('self.is_retriable = is_retriable');
+      });
+    });
+
+    describe('retry utility inclusion', () => {
+      test('includes retry_with_backoff function', () => {
+        expect(code).toContain('def retry_with_backoff(');
+      });
+
+      test('retry function has expected parameters', () => {
+        expect(code).toContain('operation,');
+        expect(code).toContain('operation_name,');
+        expect(code).toContain('max_retries=3,');
+        expect(code).toContain('base_delay=5,');
+        expect(code).toContain('retriable_exceptions=(Exception,)');
+      });
+
+      test('uses retry for drain operation', () => {
+        expect(code).toContain('drain_node_with_retry');
+        expect(code).toContain('retriable_exceptions=(NodeDrainError,)');
+      });
+
+      test('uses retry for etcd removal operation', () => {
+        expect(code).toContain('remove_etcd_member_with_retry');
+        expect(code).toContain('retriable_exceptions=(EtcdRemovalError,)');
+      });
+    });
+
+    describe('environment variable references', () => {
+      test('references ETCD_TABLE_NAME environment variable', () => {
+        expect(code).toContain("os.environ['ETCD_TABLE_NAME']");
+      });
+
+      test('references CONTROL_PLANE_ASG_NAME environment variable', () => {
+        expect(code).toContain("os.environ.get('CONTROL_PLANE_ASG_NAME')");
+      });
+    });
+
+    describe('core functions', () => {
+      test('defines get_instance_info function', () => {
+        expect(code).toContain('def get_instance_info(instance_id):');
+      });
+
+      test('defines lookup_etcd_member function', () => {
+        expect(code).toContain('def lookup_etcd_member(instance_id):');
+      });
+
+      test('defines check_quorum_safety function', () => {
+        expect(code).toContain('def check_quorum_safety(terminating_instance_id):');
+      });
+
+      test('defines complete_lifecycle_action function', () => {
+        expect(code).toContain('def complete_lifecycle_action(params, result):');
+      });
+
+      test('defines get_healthy_control_plane_instances function', () => {
+        expect(code).toContain('def get_healthy_control_plane_instances(exclude_instance=None):');
+      });
+    });
+  });
+
+  describe('createEtcdBackupLambdaCode', () => {
+    const clusterName = 'backup-cluster';
+    const backupBucket = 'my-backup-bucket';
+    let code: string;
+
+    beforeAll(() => {
+      code = createEtcdBackupLambdaCode(clusterName, backupBucket);
+    });
+
+    describe('parameter interpolation', () => {
+      test('bucket name is read from environment variable at runtime', () => {
+        // The backup bucket is not interpolated at generation time
+        // Instead, it is read from os.environ['BACKUP_BUCKET'] at runtime
+        // This allows the same Lambda code to work with different buckets
+        expect(code).toContain("bucket_name = os.environ['BACKUP_BUCKET']");
+        expect(code).toContain("s3://{bucket_name}/{s3_key}");
+      });
+    });
+
+    describe('Python structure', () => {
+      test('contains handler function', () => {
+        expect(code).toContain('def handler(event, context):');
+      });
+
+      test('contains required imports', () => {
+        expect(code).toContain('import json');
+        expect(code).toContain('import boto3');
+        expect(code).toContain('import os');
+        expect(code).toContain('import logging');
+        expect(code).toContain('import time');
+        expect(code).toContain('from datetime import datetime');
+      });
+
+      test('contains AWS client initializations', () => {
+        expect(code).toContain("ec2 = boto3.client('ec2')");
+        expect(code).toContain("autoscaling = boto3.client('autoscaling')");
+        expect(code).toContain("ssm = boto3.client('ssm')");
+        expect(code).toContain("s3 = boto3.client('s3')");
+      });
+
+      test('configures logging', () => {
+        expect(code).toContain('logger = logging.getLogger()');
+        expect(code).toContain('logger.setLevel(logging.INFO)');
+      });
+    });
+
+    describe('error classes', () => {
+      test('defines BackupError class', () => {
+        expect(code).toContain('class BackupError(Exception):');
+        expect(code).toContain('"""Raised when backup fails"""');
+      });
+
+      test('BackupError has is_retriable attribute', () => {
+        expect(code).toContain('self.is_retriable = is_retriable');
+      });
+
+      test('does NOT define NodeDrainError (lifecycle-specific)', () => {
+        expect(code).not.toContain('class NodeDrainError(Exception):');
+      });
+
+      test('does NOT define EtcdRemovalError (lifecycle-specific)', () => {
+        expect(code).not.toContain('class EtcdRemovalError(Exception):');
+      });
+    });
+
+    describe('retry utility inclusion', () => {
+      test('includes retry_with_backoff function', () => {
+        expect(code).toContain('def retry_with_backoff(');
+      });
+
+      test('uses retry for backup operation', () => {
+        expect(code).toContain('retry_with_backoff(');
+        expect(code).toContain('lambda: create_etcd_backup(target_instance)');
+        expect(code).toContain('retriable_exceptions=(BackupError,)');
+      });
+    });
+
+    describe('environment variable references', () => {
+      test('references CLUSTER_NAME environment variable', () => {
+        expect(code).toContain("os.environ['CLUSTER_NAME']");
+      });
+
+      test('references CONTROL_PLANE_ASG_NAME environment variable', () => {
+        expect(code).toContain("os.environ.get('CONTROL_PLANE_ASG_NAME')");
+      });
+
+      test('references BACKUP_BUCKET environment variable', () => {
+        expect(code).toContain("os.environ['BACKUP_BUCKET']");
+      });
+
+      test('references REGION environment variable', () => {
+        expect(code).toContain("os.environ['REGION']");
+      });
+    });
+
+    describe('core functions', () => {
+      test('defines get_healthy_control_plane_instances function', () => {
+        expect(code).toContain('def get_healthy_control_plane_instances():');
+      });
+
+      test('defines create_etcd_backup function', () => {
+        expect(code).toContain('def create_etcd_backup(instance_id):');
+      });
+
+      test('defines wait_for_backup_command function', () => {
+        expect(code).toContain('def wait_for_backup_command(command_id, instance_id, s3_key):');
+      });
+    });
+
+    describe('backup script content', () => {
+      test('creates snapshot using etcdctl', () => {
+        expect(code).toContain('etcdctl snapshot save');
+      });
+
+      test('verifies snapshot integrity', () => {
+        expect(code).toContain('etcdctl snapshot status');
+      });
+
+      test('uploads to S3', () => {
+        expect(code).toContain('aws s3 cp');
+      });
+
+      test('sets etcdctl environment variables', () => {
+        expect(code).toContain('export ETCDCTL_API=3');
+        expect(code).toContain('export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379');
+        expect(code).toContain('export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt');
+        expect(code).toContain('export ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt');
+        expect(code).toContain('export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key');
+      });
+    });
+  });
+
+  describe('createClusterHealthLambdaCode', () => {
+    const clusterName = 'health-cluster';
+    const backupBucket = 'health-backup-bucket';
+    let code: string;
+
+    beforeAll(() => {
+      code = createClusterHealthLambdaCode(clusterName, backupBucket);
+    });
+
+    describe('Python structure', () => {
+      test('contains handler function', () => {
+        expect(code).toContain('def handler(event, context):');
+      });
+
+      test('contains required imports', () => {
+        expect(code).toContain('import json');
+        expect(code).toContain('import boto3');
+        expect(code).toContain('import os');
+        expect(code).toContain('import logging');
+        expect(code).toContain('from datetime import datetime');
+      });
+
+      test('contains AWS client initializations', () => {
+        expect(code).toContain("ec2 = boto3.client('ec2')");
+        expect(code).toContain("autoscaling = boto3.client('autoscaling')");
+        expect(code).toContain("ssm = boto3.client('ssm')");
+        expect(code).toContain("s3 = boto3.client('s3')");
+      });
+
+      test('configures logging', () => {
+        expect(code).toContain('logger = logging.getLogger()');
+        expect(code).toContain('logger.setLevel(logging.INFO)');
+      });
+    });
+
+    describe('error classes', () => {
+      test('does NOT define custom exception classes', () => {
+        // Cluster health Lambda does not need custom exceptions
+        expect(code).not.toContain('class BackupError(Exception):');
+        expect(code).not.toContain('class NodeDrainError(Exception):');
+        expect(code).not.toContain('class EtcdRemovalError(Exception):');
+        expect(code).not.toContain('class QuorumRiskError(Exception):');
+      });
+    });
+
+    describe('retry utility', () => {
+      test('does NOT include retry_with_backoff function', () => {
+        // Cluster health Lambda does not use retry utility
+        expect(code).not.toContain('def retry_with_backoff(');
+      });
+    });
+
+    describe('environment variable references', () => {
+      test('references CLUSTER_NAME environment variable', () => {
+        expect(code).toContain("os.environ['CLUSTER_NAME']");
+      });
+
+      test('references REGION environment variable', () => {
+        expect(code).toContain("os.environ['REGION']");
+      });
+
+      test('references CONTROL_PLANE_ASG_NAME environment variable', () => {
+        expect(code).toContain("os.environ.get('CONTROL_PLANE_ASG_NAME')");
+      });
+
+      test('references UNHEALTHY_THRESHOLD environment variable', () => {
+        expect(code).toContain("os.environ.get('UNHEALTHY_THRESHOLD'");
+      });
+
+      test('references BACKUP_BUCKET environment variable', () => {
+        expect(code).toContain("os.environ['BACKUP_BUCKET']");
+      });
+    });
+
+    describe('core functions', () => {
+      test('defines get_healthy_instance_count function', () => {
+        expect(code).toContain('def get_healthy_instance_count():');
+      });
+
+      test('defines get_failure_count function', () => {
+        expect(code).toContain('def get_failure_count(cluster_name, region):');
+      });
+
+      test('defines set_failure_count function', () => {
+        expect(code).toContain('def set_failure_count(cluster_name, region, count):');
+      });
+
+      test('defines get_latest_backup function', () => {
+        expect(code).toContain('def get_latest_backup():');
+      });
+
+      test('defines trigger_restore_mode function', () => {
+        expect(code).toContain('def trigger_restore_mode(cluster_name, region, backup_key):');
+      });
+
+      test('defines clear_restore_mode function', () => {
+        expect(code).toContain('def clear_restore_mode(cluster_name, region):');
+      });
+    });
+
+    describe('health check logic', () => {
+      test('tracks consecutive failure count', () => {
+        expect(code).toContain('failure_count += 1');
+      });
+
+      test('checks against threshold before triggering recovery', () => {
+        expect(code).toContain('if failure_count >= threshold:');
+      });
+
+      test('resets failure count on recovery', () => {
+        expect(code).toContain('set_failure_count(cluster_name, region, 0)');
+      });
+    });
+
+    describe('restore mode SSM parameters', () => {
+      test('sets restore-mode parameter', () => {
+        expect(code).toContain("/cluster/restore-mode'");
+      });
+
+      test('sets restore-backup parameter', () => {
+        expect(code).toContain("/cluster/restore-backup'");
+      });
+
+      test('sets restore-triggered-at parameter', () => {
+        expect(code).toContain("/cluster/restore-triggered-at'");
+      });
+
+      test('sets initialized parameter to false for recovery', () => {
+        expect(code).toContain("/cluster/initialized'");
+        expect(code).toContain("Value='false'");
+      });
+    });
+  });
+});
