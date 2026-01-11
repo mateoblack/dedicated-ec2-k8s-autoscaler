@@ -34,6 +34,9 @@ class BackupError(Exception):
         super().__init__(message)
         self.is_retriable = is_retriable
 
+# Global trace ID for correlation across SSM commands
+_trace_id = None
+
 ${getPythonRetryUtils()}
 
 def handler(event, context):
@@ -41,7 +44,10 @@ def handler(event, context):
     Scheduled handler to create etcd snapshots and upload to S3.
     Runs every 6 hours via EventBridge schedule.
     """
-    logger = setup_logging(context)
+    global _trace_id
+    trace_id = uuid.uuid4().hex[:16]
+    _trace_id = trace_id
+    logger = setup_logging(context, trace_id)
     cluster_name = os.environ['CLUSTER_NAME']
     start_time = time.time() * 1000  # For duration tracking
     metrics = create_metrics_logger('K8sCluster/EtcdBackup', context)
@@ -183,6 +189,7 @@ def create_etcd_backup(instance_id):
     # Script to create snapshot and upload to S3
     command = f\"\"\"
 set -e
+export TRACE_ID="{_trace_id}"
 
 # Create snapshot directory
 BACKUP_DIR="/tmp/etcd-backup"
@@ -247,7 +254,7 @@ echo "BACKUP_SUCCESS key={s3_key} size=$SNAPSHOT_SIZE hash=$SNAPSHOT_HASH"
             TimeoutSeconds=SSM_COMMAND_TIMEOUT
         )
         command_id = response['Command']['CommandId']
-        logger.info("SSM backup command sent", extra={'command_id': command_id, 'instance_id': instance_id})
+        logger.info("SSM backup command sent", extra={'command_id': command_id, 'instance_id': instance_id, 'trace_id': _trace_id})
     except Exception as e:
         raise BackupError(
             f"Failed to send SSM backup command: {str(e)}. "

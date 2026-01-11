@@ -323,7 +323,8 @@ describe('etcd Backup Lambda', () => {
     test('Lambda code returns S3 key on success', () => {
       const code = getLambdaCode('etcd-backup');
       expect(code).toContain('BACKUP_SUCCESS');
-      expect(code).toContain('return s3_key');
+      // Returns dict with key and size for metrics
+      expect(code).toContain("return {'key': s3_key");
     });
 
     test('Lambda code logs backup success with key and size', () => {
@@ -342,7 +343,7 @@ describe('etcd Backup Lambda', () => {
 
     test('Lambda handles SSM command failures', () => {
       const code = getLambdaCode('etcd-backup');
-      expect(code).toContain('Failed to send SSM command');
+      expect(code).toContain('Failed to send SSM backup command');
     });
 
     test('Lambda handles backup verification failures', () => {
@@ -398,6 +399,38 @@ describe('etcd Backup Lambda', () => {
       const code = getLambdaCode('etcd-backup');
       // Should include metadata (hash, revision, size) with S3 object
       expect(code).toContain('--metadata');
+    });
+  });
+
+  describe('Trace ID Correlation', () => {
+    test('generates trace_id at handler start', () => {
+      const code = getLambdaCode('etcd-backup');
+      expect(code).toContain('trace_id = uuid.uuid4().hex[:16]');
+    });
+
+    test('has global _trace_id variable for SSM command correlation', () => {
+      const code = getLambdaCode('etcd-backup');
+      expect(code).toContain('# Global trace ID for correlation');
+    });
+
+    test('sets _trace_id in handler', () => {
+      const code = getLambdaCode('etcd-backup');
+      expect(code).toContain('_trace_id = trace_id');
+    });
+
+    test('passes trace_id to setup_logging', () => {
+      const code = getLambdaCode('etcd-backup');
+      expect(code).toContain('setup_logging(context, trace_id)');
+    });
+
+    test('exports TRACE_ID in SSM backup command', () => {
+      const code = getLambdaCode('etcd-backup');
+      expect(code).toContain('export TRACE_ID=');
+    });
+
+    test('includes trace_id in SSM log message', () => {
+      const code = getLambdaCode('etcd-backup');
+      expect(code).toContain("'trace_id': _trace_id");
     });
   });
 });
