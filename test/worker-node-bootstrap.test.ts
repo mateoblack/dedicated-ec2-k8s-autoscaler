@@ -125,11 +125,13 @@ describe('Worker Node Bootstrap', () => {
     });
 
     test('logs Kubernetes version after retrieval', () => {
-      expect(workerUserData).toContain('echo "Kubernetes Version:');
+      // With structured logging, uses log_info with context parameters
+      expect(workerUserData).toContain('kubernetes_version=');
     });
 
     test('logs cluster endpoint after retrieval', () => {
-      expect(workerUserData).toContain('echo "Cluster Endpoint:');
+      // With structured logging, uses log_info with context parameters
+      expect(workerUserData).toContain('cluster_endpoint=');
     });
   });
 
@@ -151,7 +153,8 @@ describe('Worker Node Bootstrap', () => {
     });
 
     test('logs token age', () => {
-      expect(workerUserData).toContain('Join token age:');
+      // With structured logging, uses log_info with age parameter
+      expect(workerUserData).toContain('Join token age');
     });
 
     test('refreshes token if age >= 20 hours', () => {
@@ -471,11 +474,13 @@ describe('Worker Node Bootstrap', () => {
     });
 
     test('logs instance ID', () => {
-      expect(workerUserData).toContain('echo "Instance ID:');
+      // With structured logging, uses log_info with context parameters
+      expect(workerUserData).toContain('instance_id=');
     });
 
     test('logs private IP', () => {
-      expect(workerUserData).toContain('echo "Private IP:');
+      // With structured logging, uses log_info with context parameters
+      expect(workerUserData).toContain('private_ip=');
     });
   });
 
@@ -553,7 +558,8 @@ describe('Worker Node Bootstrap', () => {
     });
 
     test('warns about token refresh failure but continues', () => {
-      expect(workerUserData).toContain('WARNING: Token refresh failed, will try existing token');
+      // With structured logging, uses log_warn instead of echo "WARNING:"
+      expect(workerUserData).toContain('Token refresh failed, will try existing token');
     });
   });
 

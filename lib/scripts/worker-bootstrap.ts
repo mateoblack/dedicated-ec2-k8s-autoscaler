@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { getBashRetryFunctions } from './bash-retry';
+import { getBashLoggingFunctions } from './bash-logging';
 
 /**
  * Creates the worker node bootstrap script for joining an existing Kubernetes cluster.
@@ -62,6 +63,8 @@ trap cleanup_on_failure EXIT
 
 ${getBashRetryFunctions()}
 
+${getBashLoggingFunctions()}
+
 # Get instance metadata (with IMDSv2 support)
 get_instance_metadata() {
     local path="$1"
@@ -80,27 +83,26 @@ REGION=${region}
 
 # Verify we got instance metadata
 if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
-    echo "ERROR: Failed to get instance metadata"
+    log_error "Failed to get instance metadata"
     exit 1
 fi
 
-echo "Instance ID: $INSTANCE_ID"
-echo "Private IP: $PRIVATE_IP"
+log_info "Instance metadata retrieved" "instance_id=$INSTANCE_ID" "private_ip=$PRIVATE_IP" "cluster=${clusterName}" "node_type=worker"
 
 # Wait for cluster to be initialized
-echo "Waiting for cluster to be initialized..."
+log_info "Waiting for cluster to be initialized"
 for i in {1..60}; do
     CLUSTER_INITIALIZED=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION || echo "false")
     if [ "$CLUSTER_INITIALIZED" = "true" ]; then
-        echo "Cluster is initialized, proceeding with worker join"
+        log_info "Cluster is initialized, proceeding with worker join"
         break
     fi
-    echo "Waiting for cluster initialization... ($i/60)"
+    log_info "Waiting for cluster initialization" "attempt=$i" "max_attempts=60"
     sleep 10
 done
 
 if [ "$CLUSTER_INITIALIZED" != "true" ]; then
-    echo "Timeout waiting for cluster initialization"
+    log_error "Timeout waiting for cluster initialization"
     exit 1
 fi
 
@@ -108,7 +110,7 @@ BOOTSTRAP_STAGE="get-join-params"
 
 # Function to request a fresh join token from a control plane node
 request_new_token() {
-    echo "Requesting new join token from control plane..."
+    log_info "Requesting new join token from control plane"
 
     # Find a healthy control plane instance
     CONTROL_PLANE_INSTANCE=$(aws ec2 describe-instances \
@@ -118,11 +120,11 @@ request_new_token() {
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "$CONTROL_PLANE_INSTANCE" ] || [ "$CONTROL_PLANE_INSTANCE" = "None" ]; then
-        echo "ERROR: No healthy control plane instance found"
+        log_error "No healthy control plane instance found"
         return 1
     fi
 
-    echo "Found control plane instance: $CONTROL_PLANE_INSTANCE"
+    log_info "Found control plane instance" "instance_id=$CONTROL_PLANE_INSTANCE"
 
     # Create script to generate new token on control plane
     local token_script='
@@ -149,11 +151,11 @@ fi
         --output text --region "$REGION" 2>/dev/null)
 
     if [ -z "$command_id" ] || [ "$command_id" = "None" ]; then
-        echo "ERROR: Failed to send SSM command"
+        log_error "Failed to send SSM command"
         return 1
     fi
 
-    echo "SSM command sent: $command_id"
+    log_info "SSM command sent" "command_id=$command_id"
 
     # Wait for command completion
     local max_wait=60
@@ -176,19 +178,19 @@ fi
                 --query 'StandardOutputContent' --output text --region "$REGION" 2>/dev/null)
 
             if echo "$output" | grep -q "TOKEN_REFRESH_SUCCESS"; then
-                echo "Token refresh successful"
+                log_info "Token refresh successful"
                 return 0
             else
-                echo "Token refresh command did not succeed"
+                log_error "Token refresh command did not succeed"
                 return 1
             fi
         elif [ "$status" = "Failed" ] || [ "$status" = "Cancelled" ] || [ "$status" = "TimedOut" ]; then
-            echo "SSM command failed with status: $status"
+            log_error "SSM command failed" "status=$status"
             return 1
         fi
     done
 
-    echo "Timeout waiting for token refresh"
+    log_error "Timeout waiting for token refresh"
     return 1
 }
 
@@ -233,14 +235,14 @@ CA_CERT_HASH=$(retry_command_output aws ssm get-parameter --name '/${clusterName
 
 # Check token age and refresh if needed
 TOKEN_AGE=$(check_token_age)
-echo "Join token age: $TOKEN_AGE hours"
+log_info "Join token age" "age_hours=$TOKEN_AGE"
 
 if [ "$TOKEN_AGE" != "unknown" ] && [ "$TOKEN_AGE" -ge 20 ]; then
-    echo "Token is $TOKEN_AGE hours old (near expiry), requesting refresh..."
+    log_info "Token is near expiry, requesting refresh" "age_hours=$TOKEN_AGE"
     if request_new_token; then
-        echo "Token refreshed successfully"
+        log_info "Token refreshed successfully"
     else
-        echo "WARNING: Token refresh failed, will try existing token"
+        log_warn "Token refresh failed, will try existing token"
     fi
 fi
 
@@ -254,32 +256,29 @@ validate_ssm_params() {
     local has_error=false
 
     if [ "$CLUSTER_ENDPOINT" = "PENDING_INITIALIZATION" ] || [ "$CLUSTER_ENDPOINT" = "placeholder" ]; then
-        echo "ERROR: Cluster endpoint not initialized. Cluster may not be ready."
+        log_error "Cluster endpoint not initialized - cluster may not be ready"
         has_error=true
     fi
 
     if [ "$CA_CERT_HASH" = "PENDING_INITIALIZATION" ] || [ "$CA_CERT_HASH" = "placeholder" ]; then
-        echo "ERROR: CA certificate hash not initialized. Cluster may not be ready."
+        log_error "CA certificate hash not initialized - cluster may not be ready"
         has_error=true
     fi
 
     if [ "$JOIN_TOKEN" = "PENDING_INITIALIZATION" ] || [ "$JOIN_TOKEN" = "placeholder" ]; then
-        echo "ERROR: Join token not initialized. Cluster may not be ready."
+        log_error "Join token not initialized - cluster may not be ready"
         has_error=true
     fi
 
     if [ "$has_error" = "true" ]; then
-        echo "ERROR: SSM parameters contain uninitialized values."
-        echo "This usually means the control plane has not completed initialization."
-        echo "Check if the first control plane node is healthy and has completed kubeadm init."
+        log_error "SSM parameters contain uninitialized values - control plane may not have completed initialization"
         exit 1
     fi
 }
 
 validate_ssm_params
 
-echo "Kubernetes Version: $KUBERNETES_VERSION"
-echo "Cluster Endpoint: $CLUSTER_ENDPOINT"
+log_info "Cluster configuration retrieved" "kubernetes_version=$KUBERNETES_VERSION" "cluster_endpoint=$CLUSTER_ENDPOINT"
 
 # Configure containerd (already installed in AMI)
 systemctl enable containerd
@@ -352,7 +351,7 @@ attempt_join() {
     local token="$1"
     local node_name
     node_name=$(hostname -f)
-    echo "Attempting to join cluster with token..."
+    log_info "Attempting to join cluster with token"
     kubeadm join "$CLUSTER_ENDPOINT" \
         --token "$token" \
         --discovery-token-ca-cert-hash "$CA_CERT_HASH" \
@@ -364,13 +363,13 @@ BOOTSTRAP_STAGE="kubeadm-join"
 
 # Join cluster using pre-installed kubeadm
 if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ]; then
-    echo "Joining cluster using kubeadm..."
+    log_info "Joining cluster using kubeadm"
 
     if attempt_join "$JOIN_TOKEN"; then
-        echo "Successfully joined cluster as worker node"
+        log_info "Successfully joined cluster as worker node"
         BOOTSTRAP_STAGE="complete"
     else
-        echo "First join attempt failed, requesting fresh token..."
+        log_info "First join attempt failed, requesting fresh token"
 
         # Try to get a fresh token
         if request_new_token; then
@@ -378,28 +377,28 @@ if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ];
             NEW_JOIN_TOKEN=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION)
 
             if [ -n "$NEW_JOIN_TOKEN" ] && [ "$NEW_JOIN_TOKEN" != "$JOIN_TOKEN" ]; then
-                echo "Got fresh token, retrying join..."
+                log_info "Got fresh token, retrying join"
                 # Reset kubeadm state before retry
                 kubeadm reset -f 2>/dev/null || true
 
                 if attempt_join "$NEW_JOIN_TOKEN"; then
-                    echo "Successfully joined cluster with fresh token"
+                    log_info "Successfully joined cluster with fresh token"
                     BOOTSTRAP_STAGE="complete"
                 else
-                    echo "Join failed even with fresh token"
+                    log_error "Join failed even with fresh token"
                     exit 1
                 fi
             else
-                echo "Could not get a different token"
+                log_error "Could not get a different token"
                 exit 1
             fi
         else
-            echo "Token refresh failed"
+            log_error "Token refresh failed"
             exit 1
         fi
     fi
 else
-    echo "Missing required join parameters from SSM"
+    log_error "Missing required join parameters from SSM"
     exit 1
 fi
 
@@ -407,6 +406,6 @@ fi
 trap - EXIT
 BOOTSTRAP_STAGE="complete"
 
-echo "Worker node bootstrap completed successfully!"
+log_info "Worker node bootstrap completed successfully"
 `;
 }
