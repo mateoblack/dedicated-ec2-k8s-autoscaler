@@ -5,6 +5,7 @@
 
 import { getPythonRetryUtils } from './python-retry';
 import { getPythonLoggingSetup } from './python-logging';
+import { getPythonMetricsSetup } from './python-metrics';
 
 export function createEtcdLifecycleLambdaCode(clusterName: string): string {
   return `
@@ -14,6 +15,8 @@ import os
 import time
 
 \${getPythonLoggingSetup()}
+
+\${getPythonMetricsSetup()}
 
 dynamodb = boto3.resource('dynamodb')
 ec2 = boto3.client('ec2')
@@ -54,6 +57,8 @@ def handler(event, context):
     """
     logger = setup_logging(context)
     lifecycle_params = None
+    start_time = time.time() * 1000  # For duration tracking
+    metrics = create_metrics_logger('K8sCluster/EtcdLifecycle', context)
 
     try:
         logger.info("Received lifecycle event", extra={'event': event})
@@ -69,6 +74,10 @@ def handler(event, context):
 
         if not lifecycle_params['instance_id']:
             logger.error("No instance ID found in event")
+            try:
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 400, 'body': 'No instance ID'}
 
         instance_id = lifecycle_params['instance_id']
@@ -79,6 +88,10 @@ def handler(event, context):
         if not instance_info:
             logger.warning("Instance not found - may already be terminated", extra={'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            try:
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 200, 'body': 'Instance not found, continuing'}
 
         private_ip = instance_info.get('PrivateIpAddress')
@@ -89,12 +102,20 @@ def handler(event, context):
         if not member_info:
             logger.info("No etcd member record - not a control plane node or already removed", extra={'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            try:
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 200, 'body': 'Not an etcd member, continuing'}
 
         etcd_member_id = member_info.get('EtcdMemberId')
         if not etcd_member_id:
             logger.warning("Instance has member record but no EtcdMemberId", extra={'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            try:
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 200, 'body': 'No etcd member ID, continuing'}
 
         # Check quorum safety before proceeding
@@ -106,8 +127,17 @@ def handler(event, context):
         # Step 1: Drain the node (cordon + evict pods)
         logger.info("Draining node before removal", extra={'node_name': node_name, 'instance_id': instance_id})
         drain_success = drain_node_with_retry(node_name, instance_id)
-        if not drain_success:
+        if drain_success:
+            try:
+                metrics.put_metric('NodeDrainSuccess', 1, COUNT)
+            except Exception:
+                pass
+        else:
             logger.warning("Node drain failed, continuing with etcd removal", extra={'node_name': node_name})
+            try:
+                metrics.put_metric('NodeDrainFailure', 1, COUNT)
+            except Exception:
+                pass
             # We continue with etcd removal even if drain fails - better to remove the node
             # than leave it in a partially drained state
 
@@ -123,18 +153,39 @@ def handler(event, context):
             update_member_status(member_info, 'REMOVED', context.aws_request_id)
             logger.info("Successfully removed etcd member", extra={'etcd_member_id': etcd_member_id, 'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
+            try:
+                metrics.put_metric('EtcdMemberRemovalSuccess', 1, COUNT)
+                duration_ms = time.time() * 1000 - start_time
+                metrics.put_metric('LifecycleHandlerDuration', duration_ms, MILLISECONDS)
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 200, 'body': 'Success'}
         else:
             # Removal failed after all retries - ABANDON to protect cluster
             logger.error("Failed to remove etcd member after retries", extra={'etcd_member_id': etcd_member_id, 'max_retries': MAX_RETRIES})
             update_member_status(member_info, 'REMOVAL_FAILED', context.aws_request_id)
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
+            try:
+                metrics.put_metric('EtcdMemberRemovalFailure', 1, COUNT)
+                duration_ms = time.time() * 1000 - start_time
+                metrics.put_metric('LifecycleHandlerDuration', duration_ms, MILLISECONDS)
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 500, 'body': 'etcd removal failed, abandoning termination'}
 
     except QuorumRiskError as e:
         logger.error("Quorum risk detected", extra={'error': str(e), 'error_type': type(e).__name__})
         if lifecycle_params:
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
+        try:
+            metrics.put_metric('QuorumRiskDetected', 1, COUNT)
+            duration_ms = time.time() * 1000 - start_time
+            metrics.put_metric('LifecycleHandlerDuration', duration_ms, MILLISECONDS)
+            metrics.flush()
+        except Exception:
+            pass
         return {'statusCode': 409, 'body': f'Quorum risk: {str(e)}'}
 
     except Exception as e:
@@ -142,6 +193,12 @@ def handler(event, context):
         # On unexpected errors, ABANDON to be safe
         if lifecycle_params:
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
+        try:
+            duration_ms = time.time() * 1000 - start_time
+            metrics.put_metric('LifecycleHandlerDuration', duration_ms, MILLISECONDS)
+            metrics.flush()
+        except Exception:
+            pass
         return {'statusCode': 500, 'body': f'Error: {str(e)}'}
 
 
