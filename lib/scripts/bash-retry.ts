@@ -61,6 +61,11 @@ retry_command() {
             return 0
         fi
 
+        # Emit RetryAttempt metric if emit_metric is available and this is a retry (not first attempt)
+        if [ $attempt -gt 1 ]; then
+            command -v emit_metric >/dev/null 2>&1 && emit_metric "RetryAttempt" 1 "Count"
+        fi
+
         if [ $attempt -lt $MAX_RETRIES ]; then
             # Calculate jitter: random value between 0 and delay * JITTER_FACTOR
             # Uses $RANDOM (0-32767) for randomization
@@ -82,6 +87,9 @@ retry_command() {
 
         attempt=$((attempt + 1))
     done
+
+    # Emit RetryExhausted metric if emit_metric is available
+    command -v emit_metric >/dev/null 2>&1 && emit_metric "RetryExhausted" 1 "Count"
 
     # Use structured logging if available, otherwise fall back to echo
     if command -v log_error >/dev/null 2>&1; then
@@ -159,6 +167,11 @@ retry_command_timeout() {
             failure_reason="killed"
         fi
 
+        # Emit RetryAttempt metric if emit_metric is available and this is a retry (not first attempt)
+        if [ $attempt -gt 1 ]; then
+            command -v emit_metric >/dev/null 2>&1 && emit_metric "RetryAttempt" 1 "Count"
+        fi
+
         if [ $attempt -lt $MAX_RETRIES ]; then
             # Calculate jitter: random value between 0 and delay * JITTER_FACTOR
             local jitter_max=$(awk "BEGIN {printf \\"%d\\", $delay * $JITTER_FACTOR}")
@@ -179,6 +192,9 @@ retry_command_timeout() {
 
         attempt=$((attempt + 1))
     done
+
+    # Emit RetryExhausted metric if emit_metric is available
+    command -v emit_metric >/dev/null 2>&1 && emit_metric "RetryExhausted" 1 "Count"
 
     if command -v log_error >/dev/null 2>&1; then
         log_error "Command failed after all retries" "attempts=$MAX_RETRIES" "timeout_seconds=$timeout_seconds" "command=$*"
