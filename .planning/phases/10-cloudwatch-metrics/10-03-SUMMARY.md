@@ -68,7 +68,7 @@ Each task was committed atomically:
 2. **Task 2: Add EMF metrics to etcd-backup-lambda.ts** - `f77e4de` (feat)
 3. **Task 3: Add EMF metrics to cluster-health-lambda.ts** - `0063469` (feat)
 
-**Plan metadata:** (pending)
+**Plan metadata:** `ed6ceca` (docs: complete plan)
 
 ## Files Created/Modified
 - `lib/scripts/etcd-lifecycle-lambda.ts` - Added 9 put_metric calls, 8 flush calls, metrics setup import

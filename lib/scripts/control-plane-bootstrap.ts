@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { getBashRetryFunctions } from './bash-retry';
 import { getBashLoggingFunctions } from './bash-logging';
+import { getBashMetricsFunctions } from './bash-metrics';
 
 /**
  * Creates the control plane bootstrap script for Kubernetes cluster initialization and joining.
@@ -118,6 +119,10 @@ except:
 
     echo "Cleanup completed. Instance will need manual intervention or termination."
 
+    # Emit failure metrics (|| true ensures metrics don't cause bootstrap failure)
+    emit_metric "BootstrapFailure" "1" "$METRIC_COUNT" || true
+    emit_metric_with_dimensions "BootstrapFailureStage" "1" "$METRIC_COUNT" "Name=Stage,Value=$BOOTSTRAP_STAGE Name=NodeType,Value=ControlPlane" || true
+
     # Signal unhealthy to ASG (optional - causes replacement)
     # Uncomment to auto-terminate failed instances:
     # aws autoscaling set-instance-health --instance-id \$INSTANCE_ID --health-status Unhealthy --region $REGION 2>/dev/null || true
@@ -149,6 +154,11 @@ release_init_lock() {
 ${getBashRetryFunctions()}
 
 ${getBashLoggingFunctions()}
+
+${getBashMetricsFunctions()}
+
+# Capture bootstrap start time for duration metrics
+BOOTSTRAP_START_TIME=$(date +%s%3N)
 
 # Get instance metadata (with retries for IMDS)
 get_instance_metadata() {
@@ -798,6 +808,7 @@ KUBEADMCONFIG
             log_info "Bootstrap stage transition" "stage=etcd-registration"
             if register_etcd_member; then
                 ETCD_REGISTERED=true
+                emit_metric "EtcdMemberRegistered" "1" "$METRIC_COUNT" || true
             else
                 log_warn "Failed to register etcd member, lifecycle cleanup may not work"
             fi
@@ -1120,6 +1131,7 @@ EOF
             if [ -n "\$TARGET_GROUP_ARN" ]; then
                 if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                     LB_REGISTERED=true
+                    emit_metric "LoadBalancerRegistered" "1" "$METRIC_COUNT" || true
                 fi
             else
                 log_warn "Could not find target group ARN"
@@ -1128,6 +1140,12 @@ EOF
             # Release the init lock since we're done
             release_init_lock
             BOOTSTRAP_STAGE="complete"
+
+            # Emit success metrics
+            BOOTSTRAP_END_TIME=$(date +%s%3N)
+            BOOTSTRAP_DURATION=$((BOOTSTRAP_END_TIME - BOOTSTRAP_START_TIME))
+            emit_metric "BootstrapDuration" "$BOOTSTRAP_DURATION" "$METRIC_MILLISECONDS" || true
+            emit_metric "BootstrapSuccess" "1" "$METRIC_COUNT" || true
 
             log_info "First control plane node setup completed successfully"
         else
@@ -1575,6 +1593,7 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
             log_info "Bootstrap stage transition" "stage=etcd-registration"
             if register_etcd_member; then
                 ETCD_REGISTERED=true
+                emit_metric "EtcdMemberRegistered" "1" "$METRIC_COUNT" || true
             else
                 log_warn "Failed to register etcd member, lifecycle cleanup may not work"
             fi
@@ -1586,12 +1605,19 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
             if [ -n "\$TARGET_GROUP_ARN" ]; then
                 if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                     LB_REGISTERED=true
+                    emit_metric "LoadBalancerRegistered" "1" "$METRIC_COUNT" || true
                 fi
             else
                 log_warn "Could not find target group ARN"
             fi
 
             BOOTSTRAP_STAGE="complete"
+
+            # Emit success metrics for additional control plane join
+            BOOTSTRAP_END_TIME=$(date +%s%3N)
+            BOOTSTRAP_DURATION=$((BOOTSTRAP_END_TIME - BOOTSTRAP_START_TIME))
+            emit_metric "BootstrapDuration" "$BOOTSTRAP_DURATION" "$METRIC_MILLISECONDS" || true
+            emit_metric "BootstrapSuccess" "1" "$METRIC_COUNT" || true
         else
             log_info "First join attempt failed, requesting fresh token"
 
@@ -1621,6 +1647,7 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
                         log_info "Bootstrap stage transition" "stage=etcd-registration"
                         if register_etcd_member; then
                             ETCD_REGISTERED=true
+                            emit_metric "EtcdMemberRegistered" "1" "$METRIC_COUNT" || true
                         else
                             log_warn "Failed to register etcd member"
                         fi
@@ -1631,10 +1658,17 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
                         if [ -n "\$TARGET_GROUP_ARN" ]; then
                             if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                                 LB_REGISTERED=true
+                                emit_metric "LoadBalancerRegistered" "1" "$METRIC_COUNT" || true
                             fi
                         fi
 
                         BOOTSTRAP_STAGE="complete"
+
+                        # Emit success metrics for retry join
+                        BOOTSTRAP_END_TIME=$(date +%s%3N)
+                        BOOTSTRAP_DURATION=$((BOOTSTRAP_END_TIME - BOOTSTRAP_START_TIME))
+                        emit_metric "BootstrapDuration" "$BOOTSTRAP_DURATION" "$METRIC_MILLISECONDS" || true
+                        emit_metric "BootstrapSuccess" "1" "$METRIC_COUNT" || true
                     else
                         log_error "Join failed even with fresh token"
                         exit 1
