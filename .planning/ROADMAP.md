@@ -70,7 +70,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 15-01: TBD (run /gsd:plan-phase 15 to break down)
+- [ ] 15-01: Verify consistency and update CONCERNS.md (2 tasks)
 
 #### Phase 16: Test Coverage Improvements
 
