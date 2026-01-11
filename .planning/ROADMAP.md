@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Script Extraction** - Extract bootstrap/Lambda scripts from compute-stack.ts to lib/scripts/
 - [x] **Phase 2: Retry Consolidation** - Create shared retry module for bash and Python
 - [x] **Phase 3: Variable Scoping Fix** - Fix subshell variable propagation issues in bootstrap scripts
-- [ ] **Phase 4: Race Condition Fix** - Fix etcd member registration ordering bug
+- [x] **Phase 4: Race Condition Fix** - Fix etcd member registration ordering bug
 - [ ] **Phase 5: Eval Removal** - Replace eval usage with safer command execution patterns
 - [ ] **Phase 6: Lambda Unit Tests** - Add unit tests for 5 createXxxCode methods
 - [ ] **Phase 7: Script Linting** - Add shellcheck integration and fix issues
@@ -52,10 +52,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: TBD
 
 ### Phase 5: Eval Removal
-**Goal**: Replace eval usage (lines 993, 1958, 1984) with safer command execution patterns that don't risk command injection
-**Depends on**: Phase 2 (retry module may be affected)
+**Goal**: Replace eval usage in bash retry functions with safer "$@" command execution pattern that doesn't risk command injection
+**Depends on**: Phase 2 (retry module)
 **Research**: Unlikely (bash patterns, internal code)
-**Plans**: TBD
+**Plans**: 1 (update retry functions, update callers, run tests)
 
 ### Phase 6: Lambda Unit Tests
 **Goal**: Add unit tests for the 5 createXxxCode methods that generate Lambda code, testing the Python logic independently of CDK infrastructure tests
@@ -86,8 +86,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 1. Script Extraction | 3/3 | Complete | 2026-01-11 |
 | 2. Retry Consolidation | 2/2 | Complete | 2026-01-11 |
 | 3. Variable Scoping Fix | 1/1 | Complete | 2026-01-11 |
-| 4. Race Condition Fix | 0/TBD | Not started | - |
-| 5. Eval Removal | 0/TBD | Not started | - |
+| 4. Race Condition Fix | 1/1 | Complete | 2026-01-11 |
+| 5. Eval Removal | 0/1 | Planned | - |
 | 6. Lambda Unit Tests | 0/TBD | Not started | - |
 | 7. Script Linting | 0/TBD | Not started | - |
 | 8. Documentation | 0/TBD | Not started | - |
