@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { getBashRetryFunctions } from './bash-retry';
 import { getBashLoggingFunctions } from './bash-logging';
+import { getBashMetricsFunctions } from './bash-metrics';
 
 /**
  * Creates the worker node bootstrap script for joining an existing Kubernetes cluster.
@@ -50,6 +51,9 @@ cleanup_on_failure() {
 
     echo "Cleanup completed. Worker will need manual intervention or termination."
 
+    # Emit failure metrics (|| true ensures metrics don't cause bootstrap failure)
+    emit_metric_with_dimensions "BootstrapFailure" "1" "$METRIC_COUNT" "Name=NodeType,Value=Worker" || true
+
     # Signal unhealthy to ASG (optional - causes replacement)
     # Uncomment to auto-terminate failed instances:
     # aws autoscaling set-instance-health --instance-id \$INSTANCE_ID --health-status Unhealthy --region \$REGION 2>/dev/null || true
@@ -64,6 +68,11 @@ trap cleanup_on_failure EXIT
 ${getBashRetryFunctions()}
 
 ${getBashLoggingFunctions()}
+
+${getBashMetricsFunctions()}
+
+# Capture bootstrap start time for duration metrics
+BOOTSTRAP_START_TIME=$(date +%s%3N)
 
 # Get instance metadata (with IMDSv2 support)
 get_instance_metadata() {
@@ -405,6 +414,12 @@ fi
 # Disable cleanup trap on successful completion
 trap - EXIT
 BOOTSTRAP_STAGE="complete"
+
+# Emit success metrics
+BOOTSTRAP_END_TIME=$(date +%s%3N)
+BOOTSTRAP_DURATION=$((BOOTSTRAP_END_TIME - BOOTSTRAP_START_TIME))
+emit_metric_with_dimensions "BootstrapDuration" "$BOOTSTRAP_DURATION" "$METRIC_MILLISECONDS" "Name=NodeType,Value=Worker" || true
+emit_metric_with_dimensions "BootstrapSuccess" "1" "$METRIC_COUNT" "Name=NodeType,Value=Worker" || true
 
 log_info "Worker node bootstrap completed successfully"
 `;
