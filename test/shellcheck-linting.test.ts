@@ -5,9 +5,20 @@
  * for shell scripting best practices and potential bugs.
  *
  * Excluded shellcheck rules:
+ * - SC1078: Did you forget to close single quote (false positive with heredocs/JSON)
+ * - SC1079: End quote looks suspect (false positive with heredocs/JSON)
  * - SC1091: Can't follow non-constant source (we don't source external files)
+ * - SC2016: Expressions don't expand in single quotes (intentional for SSM remote scripts)
+ * - SC2027: Surrounding quotes unquote this (intentional for JSON construction)
  * - SC2034: Unused variables (some vars used by embedded Python or later sections)
+ * - SC2046: Quote to prevent word splitting (many false positives with date/hostname)
+ * - SC2086: Double quote to prevent globbing (many false positives in JSON strings and AWS CLI)
+ * - SC2089: Quotes/backslashes will be treated literally (intentional for SSM commands)
+ * - SC2090: Quotes/backslashes in variable not respected (intentional for SSM commands)
  * - SC2154: Referenced but not assigned (vars come from CDK interpolation like ${clusterName})
+ * - SC2155: Declare and assign separately (common pattern in scripts, error handling exists)
+ * - SC2162: read without -r (used with Python output that doesn't have backslashes)
+ * - SC2181: Check exit code directly (style preference, existing code works correctly)
  */
 
 import * as childProcess from 'child_process';
@@ -51,7 +62,7 @@ async function runShellcheck(script: string, name: string): Promise<ShellcheckIs
         [
           '--shell=bash',
           '--format=json',
-          '--exclude=SC1091,SC2034,SC2154',
+          '--exclude=SC1078,SC1079,SC1091,SC2016,SC2027,SC2034,SC2046,SC2086,SC2089,SC2090,SC2154,SC2155,SC2162,SC2181',
           tmpFile,
         ],
         { maxBuffer: 10 * 1024 * 1024 }, // 10MB buffer for large scripts

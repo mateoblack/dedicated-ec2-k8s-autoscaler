@@ -62,7 +62,8 @@ ${getBashRetryFunctions()}
 # Get instance metadata (with IMDSv2 support)
 get_instance_metadata() {
     local path="$1"
-    local token=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null)
+    local token
+    token=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null)
     if [ -n "$token" ]; then
         curl -s -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/latest/meta-data/$path"
     else
@@ -136,12 +137,13 @@ fi
 '
 
     # Execute via SSM Run Command
-    local command_id=$(aws ssm send-command \
+    local command_id
+    command_id=$(aws ssm send-command \
         --instance-ids "$CONTROL_PLANE_INSTANCE" \
         --document-name "AWS-RunShellScript" \
-        --parameters "commands=[\"$token_script\"]" \
+        --parameters commands="$token_script" \
         --query 'Command.CommandId' \
-        --output text --region $REGION 2>/dev/null)
+        --output text --region "$REGION" 2>/dev/null)
 
     if [ -z "$command_id" ] || [ "$command_id" = "None" ]; then
         echo "ERROR: Failed to send SSM command"
@@ -153,20 +155,22 @@ fi
     # Wait for command completion
     local max_wait=60
     local elapsed=0
+    local status
+    local output
     while [ $elapsed -lt $max_wait ]; do
         sleep 5
         elapsed=$((elapsed + 5))
 
-        local status=$(aws ssm get-command-invocation \
+        status=$(aws ssm get-command-invocation \
             --command-id "$command_id" \
             --instance-id "$CONTROL_PLANE_INSTANCE" \
-            --query 'Status' --output text --region $REGION 2>/dev/null)
+            --query 'Status' --output text --region "$REGION" 2>/dev/null)
 
         if [ "$status" = "Success" ]; then
-            local output=$(aws ssm get-command-invocation \
+            output=$(aws ssm get-command-invocation \
                 --command-id "$command_id" \
                 --instance-id "$CONTROL_PLANE_INSTANCE" \
-                --query 'StandardOutputContent' --output text --region $REGION 2>/dev/null)
+                --query 'StandardOutputContent' --output text --region "$REGION" 2>/dev/null)
 
             if echo "$output" | grep -q "TOKEN_REFRESH_SUCCESS"; then
                 echo "Token refresh successful"
@@ -187,15 +191,16 @@ fi
 
 # Function to check if token is likely expired (older than 20 hours)
 check_token_age() {
-    local token_updated=$(aws ssm get-parameter \
+    local token_updated
+    token_updated=$(aws ssm get-parameter \
         --name "/${clusterName}/cluster/join-token-updated" \
-        --query 'Parameter.Value' --output text --region $REGION 2>/dev/null)
+        --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null)
 
     if [ -z "$token_updated" ] || [ "$token_updated" = "None" ]; then
         # No timestamp, check when the token parameter was last modified
         token_updated=$(aws ssm get-parameter \
             --name "/${clusterName}/cluster/join-token" \
-            --query 'Parameter.LastModifiedDate' --output text --region $REGION 2>/dev/null)
+            --query 'Parameter.LastModifiedDate' --output text --region "$REGION" 2>/dev/null)
     fi
 
     if [ -z "$token_updated" ] || [ "$token_updated" = "None" ]; then
@@ -204,8 +209,10 @@ check_token_age() {
     fi
 
     # Convert to epoch
-    local token_epoch=$(date -d "$token_updated" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "$token_updated" +%s 2>/dev/null)
-    local now_epoch=$(date +%s)
+    local token_epoch
+    local now_epoch
+    token_epoch=$(date -d "$token_updated" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "$token_updated" +%s 2>/dev/null)
+    now_epoch=$(date +%s)
 
     if [ -z "$token_epoch" ]; then
         echo "unknown"
@@ -338,11 +345,13 @@ systemctl enable kubelet
 # Function to attempt cluster join
 attempt_join() {
     local token="$1"
+    local node_name
+    node_name=$(hostname -f)
     echo "Attempting to join cluster with token..."
-    kubeadm join $CLUSTER_ENDPOINT \
+    kubeadm join "$CLUSTER_ENDPOINT" \
         --token "$token" \
-        --discovery-token-ca-cert-hash $CA_CERT_HASH \
-        --node-name $(hostname -f)
+        --discovery-token-ca-cert-hash "$CA_CERT_HASH" \
+        --node-name "$node_name"
     return $?
 }
 

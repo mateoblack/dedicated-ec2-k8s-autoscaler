@@ -64,8 +64,7 @@ retry_command_output() {
     local output=""
 
     while [ $attempt -le $MAX_RETRIES ]; do
-        output=$("$@" 2>/dev/null)
-        if [ $? -eq 0 ] && [ -n "$output" ]; then
+        if output=$("$@" 2>/dev/null) && [ -n "$output" ]; then
             echo "$output"
             return 0
         fi
