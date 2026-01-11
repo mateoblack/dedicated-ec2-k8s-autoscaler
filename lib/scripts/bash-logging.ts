@@ -33,7 +33,24 @@
 export function getBashLoggingFunctions(): string {
   return `
 # Shared structured logging functions
-# Note: INSTANCE_ID and BOOTSTRAP_STAGE should be defined before using these functions
+# Note: INSTANCE_ID, BOOTSTRAP_STAGE, and TRACE_ID should be defined before using these functions
+# Use init_trace_id at script start to auto-generate TRACE_ID if not already set
+
+# Generate a 16-char hex trace ID using /dev/urandom
+# Usage: trace_id=$(generate_trace_id)
+generate_trace_id() {
+    head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \\n'
+}
+
+# Initialize TRACE_ID if not already set
+# Call at the start of bootstrap scripts to ensure trace ID is available
+# Usage: init_trace_id
+init_trace_id() {
+    if [ -z "\${TRACE_ID:-}" ]; then
+        TRACE_ID=\$(generate_trace_id)
+        export TRACE_ID
+    fi
+}
 
 # JSON string escaping helper
 # Escapes quotes, backslashes, newlines, tabs for valid JSON strings
@@ -76,6 +93,11 @@ log_json() {
         local escaped_stage
         escaped_stage=\$(json_escape "\$BOOTSTRAP_STAGE")
         json="\$json,\\"stage\\":\\"\$escaped_stage\\""
+    fi
+
+    # Add trace_id if available
+    if [ -n "\${TRACE_ID:-}" ]; then
+        json="\$json,\\"trace_id\\":\\"\$TRACE_ID\\""
     fi
 
     # Process additional key=value pairs

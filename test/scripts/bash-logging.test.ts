@@ -47,6 +47,14 @@ describe('Bash Logging Functions', () => {
     test('contains log_debug function', () => {
       expect(loggingFunctions).toContain('log_debug()');
     });
+
+    test('contains generate_trace_id function', () => {
+      expect(loggingFunctions).toContain('generate_trace_id()');
+    });
+
+    test('contains init_trace_id function', () => {
+      expect(loggingFunctions).toContain('init_trace_id()');
+    });
   });
 
   describe('JSON format patterns', () => {
@@ -72,6 +80,10 @@ describe('Bash Logging Functions', () => {
 
     test('includes timestamp field', () => {
       expect(loggingFunctions).toContain('"timestamp"');
+    });
+
+    test('includes trace_id field', () => {
+      expect(loggingFunctions).toContain('trace_id');
     });
   });
 
@@ -276,6 +288,91 @@ log_info "Message without instance"
       expect(json.level).toBe('INFO');
       expect(json.message).toBe('Message without instance');
       expect(json.instance_id).toBeUndefined();
+    });
+
+    test('includes trace_id when TRACE_ID is set', () => {
+      const script = `
+#!/bin/bash
+${loggingFunctions}
+
+TRACE_ID="abc123def456ghij"
+log_info "Message with trace"
+`;
+      const output = execSync(`bash -c '${script.replace(/'/g, "'\"'\"'")}'`, {
+        encoding: 'utf8',
+      }).trim();
+
+      const json = JSON.parse(output);
+      expect(json.level).toBe('INFO');
+      expect(json.message).toBe('Message with trace');
+      expect(json.trace_id).toBe('abc123def456ghij');
+    });
+
+    test('works without TRACE_ID set (no error)', () => {
+      const script = `
+#!/bin/bash
+${loggingFunctions}
+
+unset TRACE_ID
+log_info "Message without trace"
+`;
+      const output = execSync(`bash -c '${script.replace(/'/g, "'\"'\"'")}'`, {
+        encoding: 'utf8',
+      }).trim();
+
+      const json = JSON.parse(output);
+      expect(json.level).toBe('INFO');
+      expect(json.message).toBe('Message without trace');
+      expect(json.trace_id).toBeUndefined();
+    });
+
+    test('generate_trace_id produces 16-char hex string', () => {
+      const script = `
+#!/bin/bash
+${loggingFunctions}
+
+trace_id=$(generate_trace_id)
+echo "\$trace_id"
+`;
+      const output = execSync(`bash -c '${script.replace(/'/g, "'\"'\"'")}'`, {
+        encoding: 'utf8',
+      }).trim();
+
+      expect(output).toMatch(/^[0-9a-f]{16}$/);
+    });
+
+    test('init_trace_id sets TRACE_ID when not set', () => {
+      const script = `
+#!/bin/bash
+${loggingFunctions}
+
+unset TRACE_ID
+init_trace_id
+log_info "Auto trace"
+`;
+      const output = execSync(`bash -c '${script.replace(/'/g, "'\"'\"'")}'`, {
+        encoding: 'utf8',
+      }).trim();
+
+      const json = JSON.parse(output);
+      expect(json.trace_id).toMatch(/^[0-9a-f]{16}$/);
+    });
+
+    test('init_trace_id preserves existing TRACE_ID', () => {
+      const script = `
+#!/bin/bash
+${loggingFunctions}
+
+TRACE_ID="existing12345678"
+init_trace_id
+log_info "Existing trace"
+`;
+      const output = execSync(`bash -c '${script.replace(/'/g, "'\"'\"'")}'`, {
+        encoding: 'utf8',
+      }).trim();
+
+      const json = JSON.parse(output);
+      expect(json.trace_id).toBe('existing12345678');
     });
   });
 });
