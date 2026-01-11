@@ -37,14 +37,23 @@ retry_command() {
     local delay=$RETRY_DELAY
 
     while [ $attempt -le $MAX_RETRIES ]; do
-        echo "Executing (attempt $attempt/$MAX_RETRIES): $*"
+        # Use structured logging if available, otherwise fall back to echo
+        if command -v log_info >/dev/null 2>&1; then
+            log_info "Executing command" "attempt=$attempt" "max_attempts=$MAX_RETRIES" "command=$*"
+        else
+            echo "Executing (attempt $attempt/$MAX_RETRIES): $*"
+        fi
 
         if "$@"; then
             return 0
         fi
 
         if [ $attempt -lt $MAX_RETRIES ]; then
-            echo "Command failed, retrying in \${delay}s..."
+            if command -v log_info >/dev/null 2>&1; then
+                log_info "Command failed, retrying" "delay_seconds=\${delay}"
+            else
+                echo "Command failed, retrying in \${delay}s..."
+            fi
             sleep $delay
             delay=$((delay * 2))  # Exponential backoff
         fi
@@ -52,7 +61,12 @@ retry_command() {
         attempt=$((attempt + 1))
     done
 
-    echo "ERROR: Command failed after $MAX_RETRIES attempts: $*"
+    # Use structured logging if available, otherwise fall back to echo
+    if command -v log_error >/dev/null 2>&1; then
+        log_error "Command failed after all retries" "attempts=$MAX_RETRIES" "command=$*"
+    else
+        echo "ERROR: Command failed after $MAX_RETRIES attempts: $*"
+    fi
     return 1
 }
 
