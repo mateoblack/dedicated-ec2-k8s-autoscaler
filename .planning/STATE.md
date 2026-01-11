@@ -5,43 +5,47 @@
 See: .planning/PROJECT.md (updated 2026-01-11)
 
 **Core value:** Reliable cluster initialization and etcd lifecycle management
-**Current focus:** v1.1 Observability & Reliability
+**Current focus:** Complete — v1.0 Code Audit and v1.1 Observability & Reliability shipped
 
 ## Current Position
 
-Phase: 13 of 13 (Tracing)
-Plan: 3 of 3 in current phase
-Status: Phase complete
-Last activity: 2026-01-11 — Completed 13-03-PLAN.md (Bootstrap scripts trace ID)
+Phase: All complete (13/13)
+Plan: All complete (30/30 total)
+Status: Milestones v1.0 and v1.1 shipped
+Last activity: 2026-01-11 — v1.1 milestone completed
 
-Progress: ██████████ 100%
+Progress: 100%
+
+## Milestones
+
+| Milestone | Phases | Plans | Shipped |
+|-----------|--------|-------|---------|
+| v1.0 Code Audit | 1-8 | 12 | 2026-01-11 |
+| v1.1 Observability & Reliability | 9-13 | 18 | 2026-01-11 |
 
 ## Performance Metrics
 
-**Velocity (from v1.0):**
-- Total plans completed: 12
-- Average duration: 4.7 min
-- Total execution time: 56 min
+**Velocity (v1.0 + v1.1 combined):**
+- Total plans completed: 30
+- Total files modified: 99 (35 in v1.0 + 64 in v1.1)
+- Total lines changed: +15,542 / -3,734
 
-**By Phase (v1.0):**
+**v1.0 Code Audit:**
+- 8 phases, 12 plans
+- 35 files, +8,252 / -3,332 lines
+- Key wins: 90% compute-stack.ts reduction, security fix, 2 bug fixes
 
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 1. Script Extraction | 3 | 16 min | 5.3 min |
-| 2. Retry Consolidation | 2 | 12 min | 6 min |
-| 3. Variable Scoping Fix | 1 | 2 min | 2 min |
-| 4. Race Condition Fix | 1 | 1 min | 1 min |
-| 5. Eval Removal | 1 | 4 min | 4 min |
-| 6. Lambda Unit Tests | 2 | 7 min | 3.5 min |
-| 7. Script Linting | 1 | 10 min | 10 min |
-| 8. Documentation | 1 | 4 min | 4 min |
+**v1.1 Observability & Reliability:**
+- 5 phases, 18 plans
+- 64 files, +7,290 / -402 lines
+- Key wins: Structured logging, CloudWatch metrics, end-to-end tracing
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-All decisions from v1.0 milestone have been recorded with outcomes.
+All decisions logged in PROJECT.md Key Decisions table.
+v1.0 and v1.1 decisions recorded with outcomes.
 
 ### Deferred Issues
 
@@ -49,24 +53,16 @@ None.
 
 ### Blockers/Concerns
 
-None.
+- 3 minor test failures in token-management.test.ts (error message assertions)
 
 ### Roadmap Evolution
 
-- Milestone v1.1 created: Observability & Reliability, 5 phases (Phase 9-13)
+- v1.0 Code Audit: 8 phases complete
+- v1.1 Observability & Reliability: 5 phases complete
+- Future milestones: TBD based on production feedback
 
 ## Session Continuity
 
 Last session: 2026-01-11
-Stopped at: Completed 13-03-PLAN.md (Bootstrap scripts trace ID)
+Stopped at: v1.1 milestone complete
 Resume file: None
-
-## v1.0 Summary
-
-**v1.0 Code Audit shipped (2026-01-11):**
-- 8 phases, 12 plans completed
-- 35 files modified, +8,252 / -3,332 lines
-- 1,048 tests (144 new)
-- Key wins: 90% reduction in compute-stack.ts, security fix (eval removal), 2 bug fixes (variable scoping, race condition)
-
-See `.planning/MILESTONES.md` for full details.

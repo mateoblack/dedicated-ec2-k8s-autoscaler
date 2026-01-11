@@ -7,7 +7,7 @@ Comprehensive quality and operational improvement of the AWS CDK Kubernetes auto
 ## Milestones
 
 - ✅ [v1.0 Code Audit](milestones/v1.0-ROADMAP.md) (Phases 1-8) — SHIPPED 2026-01-11
-- 🚧 **v1.1 Observability & Reliability** — Phases 9-13 (in progress)
+- ✅ [v1.1 Observability & Reliability](milestones/v1.1-ROADMAP.md) (Phases 9-13) — SHIPPED 2026-01-11
 
 ## Domain Expertise
 
@@ -35,95 +35,22 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
-### 🚧 v1.1 Observability & Reliability (In Progress)
+<details>
+<summary>✅ v1.1 Observability & Reliability (Phases 9-13) — SHIPPED 2026-01-11</summary>
 
-**Milestone Goal:** Comprehensive observability and error handling improvements to make the autoscaler easier to monitor, debug, and operate
+- [x] Phase 9: Structured Logging (4/4 plans) — completed 2026-01-11
+- [x] Phase 10: CloudWatch Metrics (4/4 plans) — completed 2026-01-11
+- [x] Phase 11: Error Messages (2/2 plans) — completed 2026-01-11
+- [x] Phase 12: Graceful Recovery (5/5 plans) — completed 2026-01-11
+- [x] Phase 13: Tracing (3/3 plans) — completed 2026-01-11
 
-**Constraints:**
-- Build on existing retry infrastructure from v1.0 (lib/scripts/bash/retry-utils.sh, lib/scripts/python/retry_utils.py)
-- Maintain backwards compatibility with existing CloudFormation deployments
-- Structured logging must work in both EC2 bootstrap context and Lambda context
-
-#### Phase 9: Structured Logging
-
-**Goal**: JSON logging format for bash scripts and Lambda functions with consistent context, severity levels, and timestamps
-**Depends on**: v1.0 complete
-**Research**: Unlikely (internal patterns, extending existing bash/Python modules)
-**Plans**: 4
-
-Plans:
-- [x] 09-01: Bash structured logging module
-- [x] 09-02: Bootstrap scripts migration
-- [x] 09-03: Python structured logging module
-- [x] 09-04: Lambda functions migration
-
-#### Phase 10: CloudWatch Metrics
-
-**Goal**: Custom metrics emission from bootstrap scripts and Lambda for monitoring dashboards
-**Depends on**: Phase 9
-**Research**: Complete (EMF for Lambda, PutMetricData CLI for bash)
-**Plans**: 4
-
-Plans:
-- [x] 10-01: Python EMF metrics module
-- [x] 10-02: IAM permissions + Bash metrics module
-- [x] 10-03: Lambda integration (EMF metrics)
-- [x] 10-04: Bootstrap integration + Dashboard widgets
-
-#### Phase 11: Error Messages
-
-**Goal**: Clearer error descriptions with actionable context and root cause hints
-**Depends on**: Phase 10
-**Research**: Unlikely (internal patterns, documentation improvements)
-**Plans**: 2
-
-Plans:
-- [x] 11-01: Lambda error messages
-- [x] 11-02: Bootstrap scripts error messages
-
-#### Phase 12: Graceful Recovery
-
-**Goal**: Enhanced retry patterns with better exponential backoff and intelligent fallbacks
-**Depends on**: Phase 11
-**Research**: Unlikely (building on existing v1.0 retry infrastructure)
-**Plans**: 5
-
-Plans:
-- [x] 12-01: Bash retry with jitter
-- [x] 12-02: Bash retry with timeout
-- [x] 12-03: Python retry with jitter
-- [x] 12-04: Circuit breaker pattern
-- [x] 12-05: Retry metrics integration
-
-#### Phase 13: Tracing
-
-**Goal**: Correlation IDs linking related operations across Lambda invocations and script execution
-**Depends on**: Phase 12
-**Research**: Complete (correlation ID patterns)
-**Plans**: 3
-
-Plans:
-- [x] 13-01: Correlation ID infrastructure
-- [x] 13-02: Lambda SSM trace ID propagation
-- [x] 13-03: Bootstrap scripts trace ID
+</details>
 
 ## Progress
 
-**Execution Order:**
-Phases execute in numeric order: 1 → 2 → ... → 8 → 9 → 10 → 11 → 12 → 13
+All milestones complete. See [MILESTONES.md](MILESTONES.md) for full history.
 
-| Phase | Milestone | Plans Complete | Status | Completed |
-|-------|-----------|----------------|--------|-----------|
-| 1. Script Extraction | v1.0 | 3/3 | Complete | 2026-01-11 |
-| 2. Retry Consolidation | v1.0 | 2/2 | Complete | 2026-01-11 |
-| 3. Variable Scoping Fix | v1.0 | 1/1 | Complete | 2026-01-11 |
-| 4. Race Condition Fix | v1.0 | 1/1 | Complete | 2026-01-11 |
-| 5. Eval Removal | v1.0 | 1/1 | Complete | 2026-01-11 |
-| 6. Lambda Unit Tests | v1.0 | 2/2 | Complete | 2026-01-11 |
-| 7. Script Linting | v1.0 | 1/1 | Complete | 2026-01-11 |
-| 8. Documentation | v1.0 | 1/1 | Complete | 2026-01-11 |
-| 9. Structured Logging | v1.1 | 4/4 | Complete | 2026-01-11 |
-| 10. CloudWatch Metrics | v1.1 | 4/4 | Complete | 2026-01-11 |
-| 11. Error Messages | v1.1 | 2/2 | Complete | 2026-01-11 |
-| 12. Graceful Recovery | v1.1 | 5/5 | Complete | 2026-01-11 |
-| 13. Tracing | v1.1 | 3/3 | Complete | 2026-01-11 |
+| Milestone | Phases | Plans | Status | Shipped |
+|-----------|--------|-------|--------|---------|
+| v1.0 Code Audit | 1-8 | 12 | Complete | 2026-01-11 |
+| v1.1 Observability & Reliability | 9-13 | 18 | Complete | 2026-01-11 |
