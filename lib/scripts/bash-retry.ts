@@ -10,6 +10,10 @@
  *
  * Note: Scripts should define MAX_RETRIES and RETRY_DELAY constants
  * BEFORE this interpolation point to override the defaults.
+ *
+ * Jitter: Both retry functions include random jitter to prevent thundering herd
+ * when multiple EC2 instances retry simultaneously. The jitter adds 0-30% of the
+ * delay value (configurable via JITTER_FACTOR, default 0.3).
  */
 
 /**
@@ -22,14 +26,23 @@
  * Both functions use MAX_RETRIES and RETRY_DELAY variables which should be
  * defined by the calling script before this interpolation point.
  *
+ * Jitter configuration:
+ * - JITTER_FACTOR: Fraction of delay to add as random jitter (default 0.3 = 30%)
+ * - Set JITTER_FACTOR=0 to disable jitter
+ * - Jitter uses bash $RANDOM (0-32767) for randomization
+ *
  * @returns Bash script string with retry functions
  */
 export function getBashRetryFunctions(): string {
   return `
 # Shared retry functions
 # Note: MAX_RETRIES and RETRY_DELAY should be defined before this point
+# JITTER_FACTOR: Fraction of delay to add as random jitter (default 0.3 = 30%)
+#   - Prevents thundering herd when multiple EC2 instances retry simultaneously
+#   - Set JITTER_FACTOR=0 to disable jitter
+: "\${JITTER_FACTOR:=0.3}"
 
-# Retry helper function with exponential backoff
+# Retry helper function with exponential backoff and jitter
 # Usage: retry_command <cmd> [args...]
 # Returns: 0 on success, 1 on failure after all retries
 retry_command() {
@@ -49,12 +62,21 @@ retry_command() {
         fi
 
         if [ $attempt -lt $MAX_RETRIES ]; then
-            if command -v log_info >/dev/null 2>&1; then
-                log_info "Command failed, retrying" "delay_seconds=\${delay}"
-            else
-                echo "Command failed, retrying in \${delay}s..."
+            # Calculate jitter: random value between 0 and delay * JITTER_FACTOR
+            # Uses $RANDOM (0-32767) for randomization
+            local jitter_max=$(awk "BEGIN {printf \\"%d\\", $delay * $JITTER_FACTOR}")
+            local jitter=0
+            if [ "$jitter_max" -gt 0 ]; then
+                jitter=$((RANDOM % (jitter_max + 1)))
             fi
-            sleep $delay
+            local actual_delay=$((delay + jitter))
+
+            if command -v log_info >/dev/null 2>&1; then
+                log_info "Command failed, retrying" "delay_seconds=\${actual_delay}" "base_delay=\${delay}" "jitter=\${jitter}"
+            else
+                echo "Command failed, retrying in \${actual_delay}s..."
+            fi
+            sleep $actual_delay
             delay=$((delay * 2))  # Exponential backoff
         fi
 
