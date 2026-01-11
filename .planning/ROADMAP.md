@@ -86,10 +86,14 @@ Plans:
 **Goal**: Enhanced retry patterns with better exponential backoff and intelligent fallbacks
 **Depends on**: Phase 11
 **Research**: Unlikely (building on existing v1.0 retry infrastructure)
-**Plans**: TBD
+**Plans**: 5
 
 Plans:
-- [ ] 12-01: TBD (run /gsd:plan-phase 12 to break down)
+- [ ] 12-01: Bash retry with jitter
+- [ ] 12-02: Bash retry with timeout
+- [ ] 12-03: Python retry with jitter
+- [ ] 12-04: Circuit breaker pattern
+- [ ] 12-05: Retry metrics integration
 
 #### Phase 13: Tracing
 
