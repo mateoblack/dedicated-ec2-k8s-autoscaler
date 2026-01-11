@@ -157,7 +157,8 @@ describe('Token Management', () => {
     });
 
     test('handles no healthy control plane found', () => {
-      expect(controlPlaneUserData).toContain('No other healthy control plane instance found');
+      // Structured logging format uses "No healthy control plane instance found"
+      expect(controlPlaneUserData).toContain('No healthy control plane instance found');
     });
 
     test('logs found control plane instance', () => {
