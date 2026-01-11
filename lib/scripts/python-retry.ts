@@ -16,10 +16,11 @@
  * Returns Python code string containing retry utility function.
  *
  * The returned string includes:
- * - retry_with_backoff(): Generic retry function with exponential backoff
+ * - retry_with_backoff(): Generic retry function with exponential backoff and jitter
  *
  * The function handles:
  * - Exponential backoff (base_delay * 2^attempt)
+ * - Jitter to decorrelate retries (configurable factor, default 0.3)
  * - Checking is_retriable attribute on exceptions
  * - Logging of attempts and failures
  *
@@ -27,21 +28,25 @@
  */
 export function getPythonRetryUtils(): string {
   return `
+import random
+
 def retry_with_backoff(
     operation,
     operation_name,
     max_retries=3,
     base_delay=5,
+    jitter_factor=0.3,
     retriable_exceptions=(Exception,)
 ):
     """
-    Execute operation with exponential backoff retry logic.
+    Execute operation with exponential backoff retry logic and jitter.
 
     Args:
         operation: Callable to execute (no arguments - use closure or functools.partial)
         operation_name: Human-readable name for logging
         max_retries: Maximum number of attempts
         base_delay: Base delay in seconds (exponential: base_delay * 2^attempt)
+        jitter_factor: Random jitter factor (0.3 = up to 30% additional delay)
         retriable_exceptions: Tuple of exception types to catch and retry
 
     Returns:
@@ -67,13 +72,18 @@ def retry_with_backoff(
 
             if attempt < max_retries:
                 delay = base_delay * (2 ** (attempt - 1))
-                logger.info(f"Waiting {delay}s before retry...")
-                time.sleep(delay)
+                jitter = delay * jitter_factor * random.random()
+                actual_delay = delay + jitter
+                logger.info(f"Waiting {actual_delay:.1f}s before retry (base: {delay}s, jitter: {jitter:.1f}s)...")
+                time.sleep(actual_delay)
         except Exception as e:
             last_error = e
             logger.error(f"Unexpected error in {operation_name} on attempt {attempt}: {str(e)}")
             if attempt < max_retries:
-                time.sleep(base_delay)
+                delay = base_delay
+                jitter = delay * jitter_factor * random.random()
+                actual_delay = delay + jitter
+                time.sleep(actual_delay)
 
     logger.error(f"All {max_retries} attempts failed for {operation_name}. Last error: {str(last_error)}")
     return None
