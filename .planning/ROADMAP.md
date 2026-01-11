@@ -88,6 +88,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 3. Variable Scoping Fix | 1/1 | Complete | 2026-01-11 |
 | 4. Race Condition Fix | 1/1 | Complete | 2026-01-11 |
 | 5. Eval Removal | 1/1 | Complete | 2026-01-11 |
-| 6. Lambda Unit Tests | 0/2 | Planned | - |
+| 6. Lambda Unit Tests | 1/2 | In progress | - |
 | 7. Script Linting | 0/TBD | Not started | - |
 | 8. Documentation | 0/TBD | Not started | - |
