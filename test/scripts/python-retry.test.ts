@@ -114,4 +114,93 @@ describe('Python Retry Utils', () => {
       expect(retryUtils).toContain('return None');
     });
   });
+
+  describe('CircuitBreaker class', () => {
+    test('defines CircuitBreaker class', () => {
+      expect(retryUtils).toContain('class CircuitBreaker:');
+    });
+
+    test('has failure_threshold parameter with default 5', () => {
+      expect(retryUtils).toContain('failure_threshold=5');
+    });
+
+    test('has reset_timeout parameter with default 60', () => {
+      expect(retryUtils).toContain('reset_timeout=60');
+    });
+
+    test('documents three states (CLOSED, OPEN, HALF_OPEN)', () => {
+      expect(retryUtils).toContain('CLOSED: Normal operation');
+      expect(retryUtils).toContain('OPEN: Service down');
+      expect(retryUtils).toContain('HALF_OPEN: Testing if service recovered');
+    });
+
+    test('documents state transitions', () => {
+      expect(retryUtils).toContain('CLOSED -> OPEN: After failure_threshold');
+      expect(retryUtils).toContain('OPEN -> HALF_OPEN: After reset_timeout');
+      expect(retryUtils).toContain('HALF_OPEN -> CLOSED: On success');
+      expect(retryUtils).toContain('HALF_OPEN -> OPEN: On failure');
+    });
+
+    test('has can_execute method', () => {
+      expect(retryUtils).toContain('def can_execute(self):');
+    });
+
+    test('has record_success method', () => {
+      expect(retryUtils).toContain('def record_success(self):');
+    });
+
+    test('has record_failure method', () => {
+      expect(retryUtils).toContain('def record_failure(self):');
+    });
+
+    test('initializes state to CLOSED', () => {
+      expect(retryUtils).toContain("self.state = 'CLOSED'");
+    });
+
+    test('tracks failure count', () => {
+      expect(retryUtils).toContain('self.failures = 0');
+      expect(retryUtils).toContain('self.failures += 1');
+    });
+
+    test('tracks last failure time', () => {
+      expect(retryUtils).toContain('self.last_failure_time = None');
+      expect(retryUtils).toContain('self.last_failure_time = time.time()');
+    });
+  });
+
+  describe('retry_with_circuit_breaker function', () => {
+    test('defines retry_with_circuit_breaker function', () => {
+      expect(retryUtils).toContain('def retry_with_circuit_breaker(');
+    });
+
+    test('has circuit_breaker parameter', () => {
+      expect(retryUtils).toContain('circuit_breaker,');
+    });
+
+    test('checks circuit breaker before execution', () => {
+      expect(retryUtils).toContain('if not circuit_breaker.can_execute():');
+    });
+
+    test('fails fast when circuit is open', () => {
+      expect(retryUtils).toContain('Circuit breaker OPEN for');
+      expect(retryUtils).toContain('failing fast');
+    });
+
+    test('calls retry_with_backoff for actual retry logic', () => {
+      expect(retryUtils).toContain('result = retry_with_backoff(');
+    });
+
+    test('records success on successful result', () => {
+      expect(retryUtils).toContain('circuit_breaker.record_success()');
+    });
+
+    test('records failure on failed result', () => {
+      expect(retryUtils).toContain('circuit_breaker.record_failure()');
+    });
+
+    test('documents circuit breaker integration', () => {
+      expect(retryUtils).toContain('protected by circuit breaker');
+      expect(retryUtils).toContain('Records success/failure to circuit breaker');
+    });
+  });
 });
