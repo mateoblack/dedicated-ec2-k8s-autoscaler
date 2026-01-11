@@ -476,5 +476,55 @@ describe('Lambda Code Generators', () => {
         expect(code).toContain("Value='false'");
       });
     });
+
+    describe('restore trigger conditions critical path', () => {
+      test('compares failure count against configurable threshold', () => {
+        expect(code).toContain('if failure_count >= threshold:');
+      });
+
+      test('calls trigger_restore_mode with backup key', () => {
+        expect(code).toContain('trigger_restore_mode(cluster_name, region, latest_backup)');
+      });
+
+      test('sets all required SSM parameters for restore', () => {
+        // All four SSM parameters must be set atomically for restore to work
+        expect(code).toContain("Name=f'/{cluster_name}/cluster/restore-mode'");
+        expect(code).toContain("Name=f'/{cluster_name}/cluster/restore-backup'");
+        expect(code).toContain("Name=f'/{cluster_name}/cluster/restore-triggered-at'");
+        expect(code).toContain("Name=f'/{cluster_name}/cluster/initialized'");
+      });
+    });
+
+    describe('latest backup selection critical path', () => {
+      test('lists S3 objects with cluster-specific prefix', () => {
+        expect(code).toContain('s3.list_objects_v2(');
+        expect(code).toContain('Prefix=prefix');
+      });
+
+      test('sorts by LastModified descending to get latest', () => {
+        expect(code).toContain("key=lambda x: x['LastModified']");
+        expect(code).toContain('reverse=True');
+      });
+
+      test('handles empty or missing Contents gracefully', () => {
+        expect(code).toContain("if 'Contents' not in response or not response['Contents']:");
+      });
+    });
+
+    describe('failure count state machine critical path', () => {
+      test('handles ParameterNotFound when count does not exist', () => {
+        expect(code).toContain('ssm.exceptions.ParameterNotFound');
+      });
+
+      test('returns zero when parameter not found (initial state)', () => {
+        expect(code).toContain('except ssm.exceptions.ParameterNotFound:');
+        // Should return 0, not raise
+        expect(code).toMatch(/except ssm\.exceptions\.ParameterNotFound:\s*\n\s*return 0/);
+      });
+
+      test('increments failure count when unhealthy', () => {
+        expect(code).toContain('failure_count += 1');
+      });
+    });
   });
 });
