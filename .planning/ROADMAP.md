@@ -17,7 +17,7 @@ None
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Script Extraction** - Extract bootstrap/Lambda scripts from compute-stack.ts to lib/scripts/
-- [ ] **Phase 2: Retry Consolidation** - Create shared retry module for bash and Python
+- [x] **Phase 2: Retry Consolidation** - Create shared retry module for bash and Python
 - [ ] **Phase 3: Variable Scoping Fix** - Fix subshell variable propagation issues in bootstrap scripts
 - [ ] **Phase 4: Race Condition Fix** - Fix etcd member registration ordering bug
 - [ ] **Phase 5: Eval Removal** - Replace eval usage with safer command execution patterns
@@ -84,7 +84,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Script Extraction | 3/3 | Complete | 2026-01-11 |
-| 2. Retry Consolidation | 1/2 | In progress | - |
+| 2. Retry Consolidation | 2/2 | Complete | 2026-01-11 |
 | 3. Variable Scoping Fix | 0/TBD | Not started | - |
 | 4. Race Condition Fix | 0/TBD | Not started | - |
 | 5. Eval Removal | 0/TBD | Not started | - |
