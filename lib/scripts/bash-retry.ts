@@ -123,5 +123,69 @@ retry_command_output() {
 
     return 1
 }
+
+# Retry helper with per-operation timeout and jitter
+# Usage: retry_command_timeout <timeout_seconds> <cmd> [args...]
+# Returns: 0 on success, 1 on failure after all retries
+# Exit codes:
+#   - timeout returns 124 when command times out
+#   - timeout returns 137 (128+9) if command was killed by SIGKILL
+#   - Both are treated as retriable failures
+retry_command_timeout() {
+    local timeout_seconds=$1
+    shift
+    local attempt=1
+    local delay=$RETRY_DELAY
+
+    while [ $attempt -le $MAX_RETRIES ]; do
+        if command -v log_info >/dev/null 2>&1; then
+            log_info "Executing command with timeout" "attempt=$attempt" "max_attempts=$MAX_RETRIES" "timeout_seconds=$timeout_seconds" "command=$*"
+        else
+            echo "Executing (attempt $attempt/$MAX_RETRIES, timeout ${timeout_seconds}s): $*"
+        fi
+
+        local exit_code=0
+        timeout $timeout_seconds "$@" || exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            return 0
+        fi
+
+        # Handle timeout-specific exit codes
+        local failure_reason="command_failed"
+        if [ $exit_code -eq 124 ]; then
+            failure_reason="timeout"
+        elif [ $exit_code -eq 137 ]; then
+            failure_reason="killed"
+        fi
+
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            # Calculate jitter: random value between 0 and delay * JITTER_FACTOR
+            local jitter_max=$(awk "BEGIN {printf \\"%d\\", $delay * $JITTER_FACTOR}")
+            local jitter=0
+            if [ "$jitter_max" -gt 0 ]; then
+                jitter=$((RANDOM % (jitter_max + 1)))
+            fi
+            local actual_delay=$((delay + jitter))
+
+            if command -v log_info >/dev/null 2>&1; then
+                log_info "Command failed, retrying" "reason=$failure_reason" "exit_code=$exit_code" "delay_seconds=\${actual_delay}" "base_delay=\${delay}" "jitter=\${jitter}"
+            else
+                echo "Command failed ($failure_reason, exit=$exit_code), retrying in \${actual_delay}s..."
+            fi
+            sleep $actual_delay
+            delay=$((delay * 2))  # Exponential backoff
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    if command -v log_error >/dev/null 2>&1; then
+        log_error "Command failed after all retries" "attempts=$MAX_RETRIES" "timeout_seconds=$timeout_seconds" "command=$*"
+    else
+        echo "ERROR: Command failed after $MAX_RETRIES attempts (timeout=${timeout_seconds}s): $*"
+    fi
+    return 1
+}
 `;
 }
