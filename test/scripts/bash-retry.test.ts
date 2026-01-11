@@ -137,4 +137,87 @@ describe('Bash Retry Functions', () => {
       expect(retryFunctions).toContain('echo');
     });
   });
+
+  describe('retry_command_timeout function', () => {
+    test('contains retry_command_timeout function', () => {
+      expect(retryFunctions).toContain('retry_command_timeout()');
+    });
+
+    test('takes timeout_seconds as first argument', () => {
+      expect(retryFunctions).toContain('local timeout_seconds=$1');
+      expect(retryFunctions).toContain('shift');
+    });
+
+    test('uses timeout command to wrap execution', () => {
+      expect(retryFunctions).toContain('timeout $timeout_seconds "$@"');
+    });
+
+    test('handles timeout exit code 124', () => {
+      expect(retryFunctions).toContain('exit_code -eq 124');
+      expect(retryFunctions).toContain('failure_reason="timeout"');
+    });
+
+    test('handles killed exit code 137', () => {
+      expect(retryFunctions).toContain('exit_code -eq 137');
+      expect(retryFunctions).toContain('failure_reason="killed"');
+    });
+
+    test('includes jitter for thundering herd prevention', () => {
+      // Extract retry_command_timeout function body
+      const timeoutFnMatch = retryFunctions.match(
+        /retry_command_timeout\(\)[\s\S]*?^}$/m
+      );
+      expect(timeoutFnMatch).toBeTruthy();
+      const timeoutFnBody = timeoutFnMatch![0];
+
+      expect(timeoutFnBody).toContain('jitter_max');
+      expect(timeoutFnBody).toContain('RANDOM');
+      expect(timeoutFnBody).toContain('actual_delay');
+    });
+
+    test('logs timeout value in structured logging', () => {
+      expect(retryFunctions).toContain('timeout_seconds=$timeout_seconds');
+    });
+
+    test('logs failure reason in retry message', () => {
+      expect(retryFunctions).toContain('reason=$failure_reason');
+    });
+  });
+
+  describe('retry_command_output_timeout function', () => {
+    test('contains retry_command_output_timeout function', () => {
+      expect(retryFunctions).toContain('retry_command_output_timeout()');
+    });
+
+    test('takes timeout_seconds as first argument', () => {
+      // Both timeout functions should have this pattern
+      const matches = retryFunctions.match(/local timeout_seconds=\$1/g);
+      expect(matches).toBeTruthy();
+      expect(matches!.length).toBeGreaterThanOrEqual(2);
+    });
+
+    test('uses timeout command for output capture', () => {
+      // Should have pattern: output=$(timeout ...)
+      expect(retryFunctions).toContain(
+        'output=$(timeout $timeout_seconds "$@" 2>/dev/null)'
+      );
+    });
+
+    test('includes jitter for thundering herd prevention', () => {
+      // Extract retry_command_output_timeout function body
+      const outputTimeoutFnMatch = retryFunctions.match(
+        /retry_command_output_timeout\(\)[\s\S]*?^}$/m
+      );
+      expect(outputTimeoutFnMatch).toBeTruthy();
+      const outputTimeoutFnBody = outputTimeoutFnMatch![0];
+
+      expect(outputTimeoutFnBody).toContain('jitter_max');
+      expect(outputTimeoutFnBody).toContain('RANDOM');
+      expect(outputTimeoutFnBody).toContain('actual_delay');
+    });
+
+    test('returns output on success', () => {
+      expect(retryFunctions).toContain('echo "$output"');
+    });
+  });
 });
