@@ -1,0 +1,240 @@
+/**
+ * Lambda code generation for etcd backup operations.
+ * Creates periodic etcd snapshots and uploads to S3.
+ */
+
+export function createEtcdBackupLambdaCode(clusterName: string, backupBucket: string): string {
+  return `
+import json
+import boto3
+import os
+import logging
+import time
+from datetime import datetime
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ec2 = boto3.client('ec2')
+autoscaling = boto3.client('autoscaling')
+ssm = boto3.client('ssm')
+s3 = boto3.client('s3')
+
+# Configuration
+SSM_COMMAND_TIMEOUT = 120
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 5
+
+class BackupError(Exception):
+    """Raised when backup fails"""
+    def __init__(self, message, is_retriable=True):
+        super().__init__(message)
+        self.is_retriable = is_retriable
+
+def handler(event, context):
+    """
+    Scheduled handler to create etcd snapshots and upload to S3.
+    Runs every 6 hours via EventBridge schedule.
+    """
+    try:
+        logger.info(f"Starting scheduled etcd backup for cluster {os.environ['CLUSTER_NAME']}")
+
+        # Find a healthy control plane instance
+        healthy_instances = get_healthy_control_plane_instances()
+
+        if not healthy_instances:
+            logger.error("No healthy control plane instances found for backup")
+            return {'statusCode': 500, 'body': 'No healthy instances'}
+
+        target_instance = healthy_instances[0]
+        logger.info(f"Using instance {target_instance} for backup")
+
+        # Create backup with retries
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                backup_key = create_etcd_backup(target_instance)
+                logger.info(f"Backup completed successfully: {backup_key}")
+                return {'statusCode': 200, 'body': f'Backup created: {backup_key}'}
+            except BackupError as e:
+                logger.warning(f"Backup attempt {attempt} failed: {str(e)}")
+                if not e.is_retriable or attempt == MAX_RETRIES:
+                    raise
+                time.sleep(RETRY_DELAY_SECONDS * attempt)
+
+    except Exception as e:
+        logger.error(f"Backup failed: {str(e)}", exc_info=True)
+        return {'statusCode': 500, 'body': f'Backup failed: {str(e)}'}
+
+
+def get_healthy_control_plane_instances():
+    """Get list of healthy control plane instances"""
+    asg_name = os.environ.get('CONTROL_PLANE_ASG_NAME')
+    if not asg_name:
+        logger.error("CONTROL_PLANE_ASG_NAME environment variable not set")
+        return []
+
+    try:
+        response = autoscaling.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[asg_name]
+        )
+
+        if not response['AutoScalingGroups']:
+            return []
+
+        asg = response['AutoScalingGroups'][0]
+        instance_ids = [
+            i['InstanceId'] for i in asg['Instances']
+            if i['LifecycleState'] == 'InService'
+        ]
+
+        if not instance_ids:
+            return []
+
+        # Verify instances are actually running
+        response = ec2.describe_instances(InstanceIds=instance_ids)
+
+        healthy_instances = []
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                if instance['State']['Name'] == 'running':
+                    healthy_instances.append(instance['InstanceId'])
+
+        logger.info(f"Found {len(healthy_instances)} healthy control plane instances")
+        return healthy_instances
+
+    except Exception as e:
+        logger.error(f"Error finding healthy instances: {str(e)}")
+        return []
+
+
+def create_etcd_backup(instance_id):
+    """
+    Create etcd snapshot via SSM and upload to S3.
+    Returns the S3 key of the backup.
+    """
+    cluster_name = os.environ['CLUSTER_NAME']
+    bucket_name = os.environ['BACKUP_BUCKET']
+    region = os.environ['REGION']
+    timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    backup_filename = f"etcd-snapshot-{timestamp}.db"
+    s3_key = f"{cluster_name}/{backup_filename}"
+
+    # Script to create snapshot and upload to S3
+    command = f\"\"\"
+set -e
+
+# Create snapshot directory
+BACKUP_DIR="/tmp/etcd-backup"
+mkdir -p $BACKUP_DIR
+SNAPSHOT_FILE="$BACKUP_DIR/{backup_filename}"
+
+# Export etcd environment
+export ETCDCTL_API=3
+export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
+export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt
+export ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt
+export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key
+
+# Check etcd health first
+echo "Checking etcd health..."
+if ! etcdctl endpoint health; then
+    echo "ERROR: etcd is not healthy"
+    exit 1
+fi
+
+# Create snapshot
+echo "Creating etcd snapshot..."
+etcdctl snapshot save "$SNAPSHOT_FILE"
+
+# Verify snapshot integrity using JSON output for structured data
+echo "Verifying snapshot integrity..."
+SNAPSHOT_STATUS=$(etcdctl snapshot status "$SNAPSHOT_FILE" --write-out=json)
+
+# Extract hash from snapshot status for integrity verification
+SNAPSHOT_HASH=$(echo "$SNAPSHOT_STATUS" | grep -o '"hash":[0-9]*' | cut -d: -f2)
+SNAPSHOT_REVISION=$(echo "$SNAPSHOT_STATUS" | grep -o '"revision":[0-9]*' | cut -d: -f2)
+
+# Validate snapshot integrity - hash must be present and non-zero
+if [ -z "$SNAPSHOT_HASH" ] || [ "$SNAPSHOT_HASH" = "0" ]; then
+    echo "ERROR: Snapshot integrity check failed - invalid or corrupt snapshot"
+    echo "Snapshot status: $SNAPSHOT_STATUS"
+    exit 1
+fi
+
+echo "Snapshot integrity verified - Hash: $SNAPSHOT_HASH, Revision: $SNAPSHOT_REVISION"
+
+# Get snapshot size
+SNAPSHOT_SIZE=$(stat -c%s "$SNAPSHOT_FILE" 2>/dev/null || stat -f%z "$SNAPSHOT_FILE")
+echo "Snapshot size: $SNAPSHOT_SIZE bytes"
+
+# Upload to S3 with metadata for audit trail
+echo "Uploading to S3..."
+aws s3 cp "$SNAPSHOT_FILE" "s3://{bucket_name}/{s3_key}" --region {region} \\
+    --metadata "hash=$SNAPSHOT_HASH,revision=$SNAPSHOT_REVISION,size=$SNAPSHOT_SIZE"
+
+# Cleanup
+rm -f "$SNAPSHOT_FILE"
+
+echo "BACKUP_SUCCESS key={s3_key} size=$SNAPSHOT_SIZE hash=$SNAPSHOT_HASH"
+\"\"\"
+
+    try:
+        response = ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName='AWS-RunShellScript',
+            Parameters={{'commands': [command]}},
+            TimeoutSeconds=SSM_COMMAND_TIMEOUT
+        )
+        command_id = response['Command']['CommandId']
+        logger.info(f"SSM backup command sent: {command_id}")
+    except Exception as e:
+        raise BackupError(f"Failed to send SSM command: {str(e)}", is_retriable=True)
+
+    # Wait for command completion
+    return wait_for_backup_command(command_id, instance_id, s3_key)
+
+
+def wait_for_backup_command(command_id, instance_id, s3_key):
+    """Wait for SSM backup command to complete"""
+    max_wait = SSM_COMMAND_TIMEOUT + 30
+    poll_interval = 5
+    elapsed = 0
+
+    while elapsed < max_wait:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        try:
+            result = ssm.get_command_invocation(
+                CommandId=command_id,
+                InstanceId=instance_id
+            )
+        except ssm.exceptions.InvocationDoesNotExist:
+            logger.info("Backup command invocation not ready yet...")
+            continue
+
+        status = result['Status']
+
+        if status == 'Success':
+            stdout = result.get('StandardOutputContent', '')
+            logger.info(f"Backup command succeeded: {stdout}")
+            # Extract backup info from output
+            if 'BACKUP_SUCCESS' in stdout:
+                return s3_key
+            raise BackupError("Backup command succeeded but no success marker found")
+
+        elif status == 'InProgress' or status == 'Pending':
+            continue
+
+        elif status in ['Failed', 'Cancelled', 'TimedOut']:
+            stderr = result.get('StandardErrorContent', '')
+            stdout = result.get('StandardOutputContent', '')
+            error_msg = stderr or stdout or 'Unknown error'
+            raise BackupError(
+                f"Backup command failed with status {status}: {error_msg}",
+                is_retriable=(status == 'TimedOut')
+            )
+
+    raise BackupError("SSM backup command timed out waiting for response", is_retriable=True)
+`;
+}
