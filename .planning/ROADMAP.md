@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Retry Consolidation** - Create shared retry module for bash and Python
 - [x] **Phase 3: Variable Scoping Fix** - Fix subshell variable propagation issues in bootstrap scripts
 - [x] **Phase 4: Race Condition Fix** - Fix etcd member registration ordering bug
-- [ ] **Phase 5: Eval Removal** - Replace eval usage with safer command execution patterns
+- [x] **Phase 5: Eval Removal** - Replace eval usage with safer command execution patterns
 - [ ] **Phase 6: Lambda Unit Tests** - Add unit tests for 5 createXxxCode methods
 - [ ] **Phase 7: Script Linting** - Add shellcheck integration and fix issues
 - [ ] **Phase 8: Documentation** - Add inline documentation to complex bootstrap sections
@@ -61,7 +61,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Goal**: Add unit tests for the 5 createXxxCode methods that generate Lambda code, testing the Python logic independently of CDK infrastructure tests
 **Depends on**: Phase 1 (extracted scripts are easier to test)
 **Research**: Unlikely (Jest already in use, 30 existing test files)
-**Plans**: TBD
+**Plans**: 2 (Lambda code generators, bootstrap script generators)
 
 ### Phase 7: Script Linting
 **Goal**: Integrate shellcheck into the build/test pipeline and fix any issues it identifies in the bash bootstrap scripts
@@ -87,7 +87,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 2. Retry Consolidation | 2/2 | Complete | 2026-01-11 |
 | 3. Variable Scoping Fix | 1/1 | Complete | 2026-01-11 |
 | 4. Race Condition Fix | 1/1 | Complete | 2026-01-11 |
-| 5. Eval Removal | 0/1 | Planned | - |
-| 6. Lambda Unit Tests | 0/TBD | Not started | - |
+| 5. Eval Removal | 1/1 | Complete | 2026-01-11 |
+| 6. Lambda Unit Tests | 0/2 | Planned | - |
 | 7. Script Linting | 0/TBD | Not started | - |
 | 8. Documentation | 0/TBD | Not started | - |
