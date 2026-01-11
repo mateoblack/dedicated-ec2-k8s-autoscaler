@@ -3,6 +3,8 @@
  * Creates periodic etcd snapshots and uploads to S3.
  */
 
+import { getPythonRetryUtils } from './python-retry';
+
 export function createEtcdBackupLambdaCode(clusterName: string, backupBucket: string): string {
   return `
 import json
@@ -31,6 +33,8 @@ class BackupError(Exception):
         super().__init__(message)
         self.is_retriable = is_retriable
 
+${getPythonRetryUtils()}
+
 def handler(event, context):
     """
     Scheduled handler to create etcd snapshots and upload to S3.
@@ -49,17 +53,20 @@ def handler(event, context):
         target_instance = healthy_instances[0]
         logger.info(f"Using instance {target_instance} for backup")
 
-        # Create backup with retries
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                backup_key = create_etcd_backup(target_instance)
-                logger.info(f"Backup completed successfully: {backup_key}")
-                return {'statusCode': 200, 'body': f'Backup created: {backup_key}'}
-            except BackupError as e:
-                logger.warning(f"Backup attempt {attempt} failed: {str(e)}")
-                if not e.is_retriable or attempt == MAX_RETRIES:
-                    raise
-                time.sleep(RETRY_DELAY_SECONDS * attempt)
+        # Create backup with retries using shared utility
+        backup_key = retry_with_backoff(
+            lambda: create_etcd_backup(target_instance),
+            "create etcd backup",
+            max_retries=MAX_RETRIES,
+            base_delay=RETRY_DELAY_SECONDS,
+            retriable_exceptions=(BackupError,)
+        )
+
+        if backup_key:
+            logger.info(f"Backup completed successfully: {backup_key}")
+            return {'statusCode': 200, 'body': f'Backup created: {backup_key}'}
+        else:
+            return {'statusCode': 500, 'body': 'Backup failed after all retries'}
 
     except Exception as e:
         logger.error(f"Backup failed: {str(e)}", exc_info=True)
