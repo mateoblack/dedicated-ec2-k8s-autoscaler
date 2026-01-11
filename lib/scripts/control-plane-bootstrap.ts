@@ -226,15 +226,16 @@ register_etcd_member() {
         return 1
     fi
 
-    # Parse member ID - look for member with matching name or peerURL containing our IP
-    # Extract decimal ID from JSON and convert to hex (etcdctl expects hex format)
+    # WHY decimal to hex conversion: etcdctl member list returns ID as decimal in JSON,
+    # but etcdctl member remove/update commands expect hex format (e.g., "1234" → "4d2").
     local decimal_id=$(echo "$member_info" | grep -o '"ID":[0-9]*' | head -1 | cut -d: -f2)
     local etcd_member_id=""
     if [ -n "$decimal_id" ]; then
         etcd_member_id=$(printf '%x' "$decimal_id" 2>/dev/null || echo "")
     fi
 
-    # Try to find by peer URL matching our IP (Python already outputs hex)
+    # WHY search by IP then name: Some etcd versions (or newly joined members) don't set
+    # the member name immediately. IP-based lookup is more reliable for fresh joins.
     local member_by_ip=$(echo "$member_info" | python3 -c "
 import sys, json
 try:
@@ -823,15 +824,16 @@ KUBEADMCONFIG
 }
 OIDCEOF
 
-                # Convert the SA public key to JWKS format
-                # Extract modulus and exponent from the RSA public key
+                # WHY extract modulus from SA key: AWS OIDC provider validates ServiceAccount
+                # tokens by verifying signatures against this public key. The JWK (JSON Web Key)
+                # format is required by the OIDC spec for the keys.json endpoint.
                 SA_PUB_KEY=$(cat $SA_SIGNING_KEY_FILE)
 
-                # Use openssl to get the key components and convert to JWK
-                # Get the modulus (n) and exponent (e) in base64url format
-                #
-                # Robust extraction using Python (more portable than xxd)
-                # Python's binascii/codecs is available on all K8s nodes
+                # WHY base64url encoding: JWK spec (RFC 7517) requires base64url encoding
+                # (not standard base64) with no padding characters. Standard base64 uses +/
+                # which are URL-unsafe; base64url uses -_ instead.
+                # WHY xxd fallback to Python: xxd (hex converter) isn't available on all AMIs.
+                # Python's codecs module is universally available on K8s nodes.
                 MODULUS_HEX=$(openssl rsa -pubin -in $SA_SIGNING_KEY_FILE -modulus -noout 2>&1)
                 if [ $? -ne 0 ] || [ -z "\$MODULUS_HEX" ]; then
                     echo "ERROR: Failed to extract modulus from SA public key"
@@ -1308,7 +1310,9 @@ aws dynamodb delete-item \
     return 1
 }
 
-# Function to check if token is likely expired (older than 20 hours)
+# WHY 20-hour threshold: kubeadm tokens expire after 24 hours by default. Proactive
+# refresh at 20 hours prevents join failures from expired tokens, which are harder
+# to debug than a slightly early token refresh.
 check_control_plane_token_age() {
     local token_updated=$(aws ssm get-parameter \
         --name "/${clusterName}/cluster/join-token-updated" \
@@ -1332,9 +1336,9 @@ check_control_plane_token_age() {
     echo "\$age_hours"
 }
 
-# Function to check if certificate key is expired (older than 90 minutes)
-# kubeadm certificate uploads expire after 2 hours by default
-# We use 90 minutes (5400 seconds) threshold to ensure refresh before expiry
+# WHY 90-minute threshold: kubeadm --upload-certs stores encrypted certs in kubeadm-certs
+# secret with 2-hour TTL. Using 90 min instead of 120 provides buffer for network latency
+# and clock skew. A node attempting join with expired certs fails cryptically.
 check_certificate_key_age() {
     local cert_key_updated=$(aws ssm get-parameter \
         --name "/${clusterName}/cluster/certificate-key-updated" \
@@ -1558,7 +1562,10 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
             cp -i /etc/kubernetes/admin.conf /root/.kube/config
             chown root:root /root/.kube/config
 
-            # Register this node's etcd member in DynamoDB for lifecycle management
+            # WHY register AFTER kubeadm join: etcd member ID only exists after successful join.
+            # Also, we only want to register if join succeeded; setting ETCD_REGISTERED=true
+            # before DynamoDB write confirms would cause cleanup to attempt deregister on
+            # a member that was never registered (race condition fixed in phase 04-01).
             BOOTSTRAP_STAGE="etcd-registration"
             if register_etcd_member; then
                 ETCD_REGISTERED=true

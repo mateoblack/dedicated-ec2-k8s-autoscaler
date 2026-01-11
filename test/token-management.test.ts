@@ -679,7 +679,7 @@ describe('Token Management', () => {
       // kubeadm certificate uploads expire after 2 hours (7200 seconds)
       // The check should use a threshold less than 2 hours (e.g., 90 minutes = 5400 seconds)
       // to ensure refresh happens before expiry
-      expect(controlPlaneUserData).toMatch(/certificate.*key.*age.*[57][04]00|certificate.*key.*90.*minutes|cert.*key.*1\.5.*hour/i);
+      expect(controlPlaneUserData).toMatch(/certificate.*key.*age.*[57][04]00|certificate.*key.*90.*minute|cert.*key.*1\.5.*hour|90-minute.*threshold/i);
     });
 
     test('validates certificate key age before control plane join', () => {
