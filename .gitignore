@@ -3,6 +3,8 @@ node_modules
 cdk.out
 cdk.context.json
 bin/k8s-cluster.ts
+.claude/
+.planning/
 
 # Generated files
 **/*.d.ts
