@@ -65,7 +65,12 @@ def handler(event, context):
                 # Check if we have a backup to restore from
                 latest_backup = get_latest_backup()
                 if latest_backup:
-                    logger.error("TRIGGERING AUTO-RECOVERY", extra={'failure_count': failure_count, 'backup_key': latest_backup})
+                    logger.error("TRIGGERING AUTO-RECOVERY", extra={
+                        'failure_count': failure_count,
+                        'backup_key': latest_backup,
+                        'check': 'Monitor new instance launch in EC2 console and check bootstrap logs in CloudWatch',
+                        'possible_causes': 'All control plane instances failed health checks for consecutive intervals'
+                    })
                     logger.info("Latest backup available", extra={'backup_key': latest_backup})
                     trigger_restore_mode(cluster_name, region, latest_backup)
                     try:
@@ -80,7 +85,11 @@ def handler(event, context):
                         'body': f'Restore mode triggered, backup: {latest_backup}'
                     }
                 else:
-                    logger.error("No backup available for restore", extra={'status': 'critical'})
+                    logger.error("No backup available for restore", extra={
+                        'status': 'critical',
+                        'check': 'Verify S3 backup bucket has recent backups and check etcd-backup Lambda execution logs',
+                        'possible_causes': 'Backup Lambda not running, S3 bucket empty, or backup schedule not configured'
+                    })
                     set_failure_count(cluster_name, region, failure_count)
                     try:
                         duration_ms = time.time() * 1000 - start_time
@@ -130,7 +139,12 @@ def handler(event, context):
             }
 
     except Exception as e:
-        logger.error("Health check error", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
+        logger.error("Health check error", extra={
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'check': 'Review Lambda logs and verify IAM permissions for EC2, ASG, S3, and SSM APIs',
+            'possible_causes': 'IAM permission issues, network connectivity, or AWS service errors'
+        }, exc_info=True)
         try:
             duration_ms = time.time() * 1000 - start_time
             metrics.put_metric('HealthCheckDuration', duration_ms, MILLISECONDS)
@@ -175,7 +189,11 @@ def get_healthy_instance_count():
         return running_count
 
     except Exception as e:
-        logger.error("Error getting instance count", extra={'error': str(e)})
+        logger.error("Error getting instance count from ASG", extra={
+            'error': str(e),
+            'check': 'Verify ASG exists and Lambda has ec2:DescribeInstances and autoscaling:DescribeAutoScalingGroups permissions',
+            'possible_causes': 'ASG not found, IAM permission issues, or AWS API errors'
+        })
         return 0
 
 
@@ -189,7 +207,12 @@ def get_failure_count(cluster_name, region):
     except ssm.exceptions.ParameterNotFound:
         return 0
     except Exception as e:
-        logger.error("Error getting failure count", extra={'error': str(e), 'cluster_name': cluster_name})
+        logger.error("Error getting failure count from SSM", extra={
+            'error': str(e),
+            'cluster_name': cluster_name,
+            'check': 'Verify SSM parameter exists and Lambda has ssm:GetParameter permission',
+            'possible_causes': 'SSM access denied, parameter path incorrect, or network issues'
+        })
         return 0
 
 
@@ -203,7 +226,13 @@ def set_failure_count(cluster_name, region, count):
             Overwrite=True
         )
     except Exception as e:
-        logger.error("Error setting failure count", extra={'error': str(e), 'cluster_name': cluster_name, 'count': count})
+        logger.error("Error setting failure count in SSM", extra={
+            'error': str(e),
+            'cluster_name': cluster_name,
+            'count': count,
+            'check': 'Verify Lambda has ssm:PutParameter permission for /{cluster_name}/health/* path',
+            'possible_causes': 'SSM access denied, IAM policy too restrictive, or network issues'
+        })
 
 
 def get_latest_backup():
@@ -234,7 +263,12 @@ def get_latest_backup():
         return latest
 
     except Exception as e:
-        logger.error("Error listing backups", extra={'error': str(e), 'bucket': bucket})
+        logger.error("Error listing backups from S3", extra={
+            'error': str(e),
+            'bucket': bucket,
+            'check': 'Verify S3 bucket exists and Lambda has s3:ListBucket permission',
+            'possible_causes': 'S3 access denied, bucket not found, or bucket policy restrictions'
+        })
         return None
 
 
@@ -274,7 +308,12 @@ def trigger_restore_mode(cluster_name, region, backup_key):
         logger.info("Restore mode triggered", extra={'backup_key': backup_key, 'cluster_name': cluster_name})
 
     except Exception as e:
-        logger.error("Error triggering restore mode", extra={'error': str(e), 'backup_key': backup_key})
+        logger.error("Error triggering restore mode via SSM", extra={
+            'error': str(e),
+            'backup_key': backup_key,
+            'check': 'Verify Lambda has ssm:PutParameter permission for /{cluster_name}/cluster/* path',
+            'possible_causes': 'SSM access denied, IAM policy too restrictive, or network issues'
+        })
         raise
 
 
@@ -303,6 +342,11 @@ def clear_restore_mode(cluster_name, region):
         logger.info("Restore mode cleared - cluster recovered", extra={'cluster_name': cluster_name, 'status': 'recovered'})
 
     except Exception as e:
-        logger.error("Error clearing restore mode", extra={'error': str(e), 'cluster_name': cluster_name})
+        logger.error("Error clearing restore mode via SSM", extra={
+            'error': str(e),
+            'cluster_name': cluster_name,
+            'check': 'Verify Lambda has ssm:PutParameter permission for /{cluster_name}/cluster/* path',
+            'possible_causes': 'SSM access denied, IAM policy too restrictive, or network issues'
+        })
 `;
 }
