@@ -19,3 +19,4 @@ export { getBashLoggingFunctions } from './bash-logging';
 // Shared Python utilities
 export { getPythonRetryUtils } from './python-retry';
 export { getPythonLoggingSetup } from './python-logging';
+export { getPythonMetricsSetup } from './python-metrics';
