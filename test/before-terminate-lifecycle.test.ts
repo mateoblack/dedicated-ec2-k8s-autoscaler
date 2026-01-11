@@ -196,11 +196,13 @@ describe('Before Terminate Lifecycle Hook', () => {
     });
 
     test('uses exponential backoff', () => {
-      expect(lifecycleLambdaCode).toContain('Exponential backoff');
+      // Shared retry utility documents exponential backoff formula
+      expect(lifecycleLambdaCode).toContain('base_delay * (2 ** (attempt - 1))');
     });
 
     test('logs all retries failed', () => {
-      expect(lifecycleLambdaCode).toContain('drain attempts failed');
+      // Shared retry utility logs failures generically
+      expect(lifecycleLambdaCode).toContain('attempts failed');
     });
   });
 

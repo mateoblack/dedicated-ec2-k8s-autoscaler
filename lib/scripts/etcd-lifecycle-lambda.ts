@@ -3,6 +3,8 @@
  * Handles EC2 instance termination lifecycle hooks for safe etcd member removal.
  */
 
+import { getPythonRetryUtils } from './python-retry';
+
 export function createEtcdLifecycleLambdaCode(clusterName: string): string {
   return `
 import json
@@ -42,6 +44,8 @@ class EtcdRemovalError(Exception):
 class QuorumRiskError(Exception):
     """Raised when removal would risk etcd quorum"""
     pass
+
+${getPythonRetryUtils()}
 
 def handler(event, context):
     """
@@ -214,40 +218,15 @@ def check_quorum_safety(terminating_instance_id):
 
 
 def drain_node_with_retry(node_name, terminating_instance_id):
-    """
-    Attempt to drain node with retries.
-    Returns True on success, False on failure.
-    """
-    last_error = None
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.info(f"Attempt {attempt}/{MAX_RETRIES} to drain node {node_name}")
-            drain_node(node_name, terminating_instance_id)
-            return True
-
-        except NodeDrainError as e:
-            last_error = e
-            logger.warning(f"Drain attempt {attempt} failed: {str(e)}")
-
-            if not e.is_retriable:
-                logger.error("Drain error is not retriable, giving up")
-                break
-
-            if attempt < MAX_RETRIES:
-                delay = RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
-                logger.info(f"Waiting {delay}s before retry...")
-                time.sleep(delay)
-
-        except Exception as e:
-            last_error = e
-            logger.error(f"Unexpected error draining node on attempt {attempt}: {str(e)}")
-
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
-
-    logger.error(f"All {MAX_RETRIES} drain attempts failed. Last error: {str(last_error)}")
-    return False
+    """Attempt to drain node with retries."""
+    result = retry_with_backoff(
+        lambda: drain_node(node_name, terminating_instance_id) or True,
+        f"drain node {node_name}",
+        max_retries=MAX_RETRIES,
+        base_delay=RETRY_DELAY_SECONDS,
+        retriable_exceptions=(NodeDrainError,)
+    )
+    return result is not None
 
 
 def drain_node(node_name, terminating_instance_id):
@@ -370,40 +349,15 @@ def wait_for_drain_command(command_id, instance_id):
 
 
 def remove_etcd_member_with_retry(member_id, private_ip, terminating_instance_id):
-    """
-    Attempt to remove etcd member with retries and exponential backoff.
-    Returns True on success, False on failure.
-    """
-    last_error = None
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.info(f"Attempt {attempt}/{MAX_RETRIES} to remove etcd member {member_id}")
-            remove_etcd_member(member_id, private_ip, terminating_instance_id)
-            return True
-
-        except EtcdRemovalError as e:
-            last_error = e
-            logger.warning(f"Attempt {attempt} failed: {str(e)}")
-
-            if not e.is_retriable:
-                logger.error("Error is not retriable, giving up")
-                break
-
-            if attempt < MAX_RETRIES:
-                delay = RETRY_DELAY_SECONDS * (2 ** (attempt - 1))  # Exponential backoff
-                logger.info(f"Waiting {delay}s before retry...")
-                time.sleep(delay)
-
-        except Exception as e:
-            last_error = e
-            logger.error(f"Unexpected error on attempt {attempt}: {str(e)}")
-
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SECONDS)
-
-    logger.error(f"All {MAX_RETRIES} attempts failed. Last error: {str(last_error)}")
-    return False
+    """Attempt to remove etcd member with retries."""
+    result = retry_with_backoff(
+        lambda: remove_etcd_member(member_id, private_ip, terminating_instance_id) or True,
+        f"remove etcd member {member_id}",
+        max_retries=MAX_RETRIES,
+        base_delay=RETRY_DELAY_SECONDS,
+        retriable_exceptions=(EtcdRemovalError,)
+    )
+    return result is not None
 
 
 def remove_etcd_member(member_id, private_ip, terminating_instance_id):
