@@ -35,6 +35,7 @@ export function getPythonLoggingSetup(): string {
   return `
 import json
 import logging
+import uuid
 from datetime import datetime
 
 class JsonFormatter(logging.Formatter):
@@ -54,6 +55,7 @@ class JsonFormatter(logging.Formatter):
             'logger': record.name,
             'request_id': getattr(record, 'request_id', _request_id),
             'function_name': getattr(record, 'function_name', _function_name),
+            'trace_id': getattr(record, 'trace_id', _trace_id),
         }
 
         # Include any extra fields passed via extra parameter
@@ -67,7 +69,7 @@ class JsonFormatter(logging.Formatter):
             'levelname', 'levelno', 'lineno', 'module', 'msecs',
             'pathname', 'process', 'processName', 'relativeCreated',
             'stack_info', 'exc_info', 'exc_text', 'thread', 'threadName',
-            'message', 'request_id', 'function_name', 'extra', 'taskName'
+            'message', 'request_id', 'function_name', 'trace_id', 'extra', 'taskName'
         }
         for key, value in record.__dict__.items():
             if key not in standard_attrs and not key.startswith('_'):
@@ -84,9 +86,10 @@ class JsonFormatter(logging.Formatter):
 # Global context (set by handler via setup_logging)
 _request_id = None
 _function_name = None
+_trace_id = None
 
 
-def setup_logging(context=None):
+def setup_logging(context=None, trace_id=None):
     """
     Configure the root logger for JSON structured output.
 
@@ -97,6 +100,8 @@ def setup_logging(context=None):
         context: Lambda context object (optional). If provided,
                  request_id and function_name will be included
                  in all log records.
+        trace_id: Correlation ID for tracing related operations (optional).
+                  If not provided, a 16-char hex ID will be auto-generated.
 
     Returns:
         The configured root logger.
@@ -106,11 +111,14 @@ def setup_logging(context=None):
             logger = setup_logging(context)
             logger.info("Processing event", extra={'event_type': 'test'})
     """
-    global _request_id, _function_name
+    global _request_id, _function_name, _trace_id
 
     if context:
         _request_id = getattr(context, 'aws_request_id', None)
         _function_name = getattr(context, 'function_name', None)
+
+    # Set trace_id: use provided value, or generate a 16-char hex ID
+    _trace_id = trace_id if trace_id else uuid.uuid4().hex[:16]
 
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)

@@ -33,8 +33,8 @@ describe('Python Logging Setup', () => {
   });
 
   describe('function definitions', () => {
-    test('contains setup_logging function', () => {
-      expect(loggingSetup).toContain('def setup_logging(context=None)');
+    test('contains setup_logging function with trace_id parameter', () => {
+      expect(loggingSetup).toContain('def setup_logging(context=None, trace_id=None)');
     });
   });
 
@@ -45,6 +45,10 @@ describe('Python Logging Setup', () => {
 
     test('imports logging module', () => {
       expect(loggingSetup).toContain('import logging');
+    });
+
+    test('imports uuid module', () => {
+      expect(loggingSetup).toContain('import uuid');
     });
 
     test('imports datetime', () => {
@@ -79,6 +83,11 @@ describe('Python Logging Setup', () => {
       expect(loggingSetup).toContain("'function_name'");
       expect(loggingSetup).toContain('_function_name');
     });
+
+    test('includes trace_id field', () => {
+      expect(loggingSetup).toContain("'trace_id'");
+      expect(loggingSetup).toContain('_trace_id');
+    });
   });
 
   describe('Lambda context handling', () => {
@@ -92,7 +101,25 @@ describe('Python Logging Setup', () => {
     });
 
     test('uses global variables for context', () => {
-      expect(loggingSetup).toContain('global _request_id, _function_name');
+      expect(loggingSetup).toContain('global _request_id, _function_name, _trace_id');
+    });
+  });
+
+  describe('trace_id handling', () => {
+    test('auto-generates trace_id using uuid', () => {
+      expect(loggingSetup).toContain('uuid.uuid4().hex[:16]');
+    });
+
+    test('uses provided trace_id if passed', () => {
+      expect(loggingSetup).toContain('trace_id if trace_id else');
+    });
+
+    test('trace_id is 16 chars (uses [:16] slice)', () => {
+      expect(loggingSetup).toContain('[:16]');
+    });
+
+    test('trace_id in standard_attrs to prevent duplication', () => {
+      expect(loggingSetup).toMatch(/standard_attrs\s*=\s*\{[^}]*'trace_id'/);
     });
   });
 
