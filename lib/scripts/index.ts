@@ -15,6 +15,7 @@ export { createControlPlaneBootstrapScript } from './control-plane-bootstrap';
 // Shared bash utilities
 export { getBashRetryFunctions } from './bash-retry';
 export { getBashLoggingFunctions } from './bash-logging';
+export { getBashMetricsFunctions } from './bash-metrics';
 
 // Shared Python utilities
 export { getPythonRetryUtils } from './python-retry';
