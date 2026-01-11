@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-11)
 
 **Core value:** Reliable cluster initialization and etcd lifecycle management
-**Current focus:** Complete — v1.0 Code Audit and v1.1 Observability & Reliability shipped
+**Current focus:** v1.2 Quality & Consistency - fix test failures and clean up technical debt
 
 ## Current Position
 
-Phase: All complete (13/13)
-Plan: All complete (30/30 total)
-Status: Milestones v1.0 and v1.1 shipped
-Last activity: 2026-01-11 — v1.1 milestone completed
+Phase: 14 of 16 (Test Failures & Consistency Audit)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-01-11 — Milestone v1.2 created
 
-Progress: 100%
+Progress: ░░░░░░░░░░ 0%
 
 ## Milestones
 
@@ -22,6 +22,7 @@ Progress: 100%
 |-----------|--------|-------|---------|
 | v1.0 Code Audit | 1-8 | 12 | 2026-01-11 |
 | v1.1 Observability & Reliability | 9-13 | 18 | 2026-01-11 |
+| v1.2 Quality & Consistency | 14-16 | TBD | In progress |
 
 ## Performance Metrics
 
@@ -51,18 +52,18 @@ v1.0 and v1.1 decisions recorded with outcomes.
 
 None.
 
-### Blockers/Concerns
+### Blockers/Concerns Carried Forward
 
-- 3 minor test failures in token-management.test.ts (error message assertions)
+- 3 minor test failures in token-management.test.ts (error message assertions) — to be fixed in Phase 14
 
 ### Roadmap Evolution
 
 - v1.0 Code Audit: 8 phases complete
 - v1.1 Observability & Reliability: 5 phases complete
-- Future milestones: TBD based on production feedback
+- v1.2 Quality & Consistency created: 3 phases (Phase 14-16)
 
 ## Session Continuity
 
 Last session: 2026-01-11
-Stopped at: v1.1 milestone complete
+Stopped at: Milestone v1.2 initialization
 Resume file: None

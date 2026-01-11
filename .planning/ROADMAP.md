@@ -8,6 +8,7 @@ Comprehensive quality and operational improvement of the AWS CDK Kubernetes auto
 
 - ✅ [v1.0 Code Audit](milestones/v1.0-ROADMAP.md) (Phases 1-8) — SHIPPED 2026-01-11
 - ✅ [v1.1 Observability & Reliability](milestones/v1.1-ROADMAP.md) (Phases 9-13) — SHIPPED 2026-01-11
+- 🚧 **v1.2 Quality & Consistency** - Phases 14-16 (in progress)
 
 ## Domain Expertise
 
@@ -46,11 +47,46 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
+### 🚧 v1.2 Quality & Consistency (In Progress)
+
+**Milestone Goal:** Fix known test failures and clean up technical debt around code consistency and test coverage.
+
+#### Phase 14: Test Failures & Consistency Audit
+
+**Goal**: Fix the 3 failing assertions in token-management.test.ts and audit codebase for consistency issues
+**Depends on**: Previous milestone complete
+**Research**: Unlikely (internal test fixes, established patterns)
+**Plans**: TBD
+
+Plans:
+- [ ] 14-01: TBD (run /gsd:plan-phase 14 to break down)
+
+#### Phase 15: Code Consistency Cleanup
+
+**Goal**: Address naming, patterns, and formatting inconsistencies identified in audit
+**Depends on**: Phase 14
+**Research**: Unlikely (internal refactoring, established patterns)
+**Plans**: TBD
+
+Plans:
+- [ ] 15-01: TBD (run /gsd:plan-phase 15 to break down)
+
+#### Phase 16: Test Coverage Improvements
+
+**Goal**: Identify areas with missing or weak test coverage and add comprehensive tests
+**Depends on**: Phase 15
+**Research**: Unlikely (internal testing, established patterns)
+**Plans**: TBD
+
+Plans:
+- [ ] 16-01: TBD (run /gsd:plan-phase 16 to break down)
+
 ## Progress
 
-All milestones complete. See [MILESTONES.md](MILESTONES.md) for full history.
+See [MILESTONES.md](MILESTONES.md) for completed milestone history.
 
-| Milestone | Phases | Plans | Status | Shipped |
-|-----------|--------|-------|--------|---------|
-| v1.0 Code Audit | 1-8 | 12 | Complete | 2026-01-11 |
-| v1.1 Observability & Reliability | 9-13 | 18 | Complete | 2026-01-11 |
+| Phase | Milestone | Plans | Status | Completed |
+|-------|-----------|-------|--------|-----------|
+| 14. Test Failures & Consistency Audit | v1.2 | 0/? | Not started | - |
+| 15. Code Consistency Cleanup | v1.2 | 0/? | Not started | - |
+| 16. Test Coverage Improvements | v1.2 | 0/? | Not started | - |
