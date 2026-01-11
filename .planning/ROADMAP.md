@@ -75,10 +75,11 @@ Plans:
 **Goal**: Clearer error descriptions with actionable context and root cause hints
 **Depends on**: Phase 10
 **Research**: Unlikely (internal patterns, documentation improvements)
-**Plans**: TBD
+**Plans**: 2
 
 Plans:
-- [ ] 11-01: TBD (run /gsd:plan-phase 11 to break down)
+- [x] 11-01: Lambda error messages
+- [ ] 11-02: Bootstrap scripts error messages
 
 #### Phase 12: Graceful Recovery
 
@@ -118,6 +119,6 @@ Phases execute in numeric order: 1 → 2 → ... → 8 → 9 → 10 → 11 → 1
 | 8. Documentation | v1.0 | 1/1 | Complete | 2026-01-11 |
 | 9. Structured Logging | v1.1 | 4/4 | Complete | 2026-01-11 |
 | 10. CloudWatch Metrics | v1.1 | 4/4 | Complete | 2026-01-11 |
-| 11. Error Messages | v1.1 | 0/? | Not started | - |
+| 11. Error Messages | v1.1 | 1/2 | In progress | - |
 | 12. Graceful Recovery | v1.1 | 0/? | Not started | - |
 | 13. Tracing | v1.1 | 0/? | Not started | - |
