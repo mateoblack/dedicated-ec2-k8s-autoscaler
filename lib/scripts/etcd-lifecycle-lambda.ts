@@ -301,6 +301,7 @@ def drain_node_with_retry(node_name, terminating_instance_id):
         f"drain node {node_name}",
         max_retries=MAX_RETRIES,
         base_delay=RETRY_DELAY_SECONDS,
+        jitter_factor=0.3,
         retriable_exceptions=(NodeDrainError,)
     )
     return result is not None
@@ -449,6 +450,7 @@ def remove_etcd_member_with_retry(member_id, private_ip, terminating_instance_id
         f"remove etcd member {member_id}",
         max_retries=MAX_RETRIES,
         base_delay=RETRY_DELAY_SECONDS,
+        jitter_factor=0.3,
         retriable_exceptions=(EtcdRemovalError,)
     )
     return result is not None

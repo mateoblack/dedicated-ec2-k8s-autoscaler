@@ -75,6 +75,7 @@ def handler(event, context):
             "create etcd backup",
             max_retries=MAX_RETRIES,
             base_delay=RETRY_DELAY_SECONDS,
+            jitter_factor=0.3,
             retriable_exceptions=(BackupError,)
         )
 
