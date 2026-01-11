@@ -228,7 +228,7 @@ describe('Worker Node Bootstrap', () => {
     });
 
     test('includes cluster endpoint in join', () => {
-      expect(workerUserData).toContain('kubeadm join $CLUSTER_ENDPOINT');
+      expect(workerUserData).toContain('kubeadm join "$CLUSTER_ENDPOINT"');
     });
 
     test('includes --token flag', () => {

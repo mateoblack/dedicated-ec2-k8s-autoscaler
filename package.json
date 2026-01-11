@@ -9,6 +9,7 @@
     "watch": "tsc -w",
     "test": "cdk synth && jest",
     "test:code": "jest",
+    "lint:shell": "jest test/shellcheck-linting.test.ts",
     "cdk": "cdk"
   },
   "devDependencies": {
