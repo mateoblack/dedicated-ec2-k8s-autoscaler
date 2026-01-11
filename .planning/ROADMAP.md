@@ -60,7 +60,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 14-01: Fix test failures (3 tasks) — completed 2026-01-11
-- [ ] 14-02: Consistency audit (3 tasks)
+- [x] 14-02: Consistency audit (3 tasks) — completed 2026-01-11
 
 #### Phase 15: Code Consistency Cleanup
 
@@ -88,6 +88,6 @@ See [MILESTONES.md](MILESTONES.md) for completed milestone history.
 
 | Phase | Milestone | Plans | Status | Completed |
 |-------|-----------|-------|--------|-----------|
-| 14. Test Failures & Consistency Audit | v1.2 | 1/2 | In progress | - |
+| 14. Test Failures & Consistency Audit | v1.2 | 2/2 | Complete | 2026-01-11 |
 | 15. Code Consistency Cleanup | v1.2 | 0/? | Not started | - |
 | 16. Test Coverage Improvements | v1.2 | 0/? | Not started | - |
