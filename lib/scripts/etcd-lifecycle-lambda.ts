@@ -163,7 +163,12 @@ def handler(event, context):
             return {'statusCode': 200, 'body': 'Success'}
         else:
             # Removal failed after all retries - ABANDON to protect cluster
-            logger.error("Failed to remove etcd member after retries", extra={'etcd_member_id': etcd_member_id, 'max_retries': MAX_RETRIES})
+            logger.error("Failed to remove etcd member after retries", extra={
+                'etcd_member_id': etcd_member_id,
+                'max_retries': MAX_RETRIES,
+                'check': 'Verify etcd cluster health with etcdctl endpoint health and check SSM command history',
+                'possible_causes': 'etcd cluster unhealthy, network issues, certificate problems, or SSM agent not running'
+            })
             update_member_status(member_info, 'REMOVAL_FAILED', context.aws_request_id)
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
             try:
@@ -176,7 +181,12 @@ def handler(event, context):
             return {'statusCode': 500, 'body': 'etcd removal failed, abandoning termination'}
 
     except QuorumRiskError as e:
-        logger.error("Quorum risk detected", extra={'error': str(e), 'error_type': type(e).__name__})
+        logger.error("Quorum risk detected", extra={
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'check': 'Verify ASG health in EC2 console and review CloudWatch etcd metrics',
+            'possible_causes': 'Multiple instances unhealthy, ASG scaling issues, or recent terminations'
+        })
         if lifecycle_params:
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
         try:
@@ -189,7 +199,12 @@ def handler(event, context):
         return {'statusCode': 409, 'body': f'Quorum risk: {str(e)}'}
 
     except Exception as e:
-        logger.error("Unexpected error", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
+        logger.error("Unexpected error during lifecycle handling", extra={
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'check': 'Review Lambda logs and check IAM permissions for EC2, SSM, DynamoDB, and ASG APIs',
+            'possible_causes': 'IAM permission issues, network connectivity, or AWS service errors'
+        }, exc_info=True)
         # On unexpected errors, ABANDON to be safe
         if lifecycle_params:
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
@@ -249,7 +264,12 @@ def update_member_status(member_info, status, request_id):
             }
         )
     except Exception as e:
-        logger.error("Failed to update member status", extra={'error': str(e), 'member_id': member_info.get('MemberId')})
+        logger.error("Failed to update member status in DynamoDB", extra={
+            'error': str(e),
+            'member_id': member_info.get('MemberId'),
+            'check': 'Verify DynamoDB table exists and Lambda has write permissions',
+            'possible_causes': 'DynamoDB access denied, table not found, or network issues'
+        })
         # Don't raise - status update failure shouldn't block the operation
 
 
@@ -269,7 +289,8 @@ def check_quorum_safety(terminating_instance_id):
     if healthy_count < MIN_HEALTHY_NODES_FOR_REMOVAL:
         raise QuorumRiskError(
             f"Only {healthy_count} healthy nodes remaining. "
-            f"Need at least {MIN_HEALTHY_NODES_FOR_REMOVAL} to safely remove a member."
+            f"Need at least {MIN_HEALTHY_NODES_FOR_REMOVAL} to safely remove a member. "
+            f"Check ASG health in EC2 console, verify instances are InService, and review CloudWatch etcd metrics."
         )
 
 
@@ -296,7 +317,12 @@ def drain_node(node_name, terminating_instance_id):
     healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
 
     if not healthy_instances:
-        raise NodeDrainError("No healthy control plane instances available for drain", is_retriable=True)
+        raise NodeDrainError(
+            "No healthy control plane instances available for drain. "
+            "All instances may be unhealthy or terminating. "
+            "Check ASG status in EC2 console and verify instances are InService and passing health checks.",
+            is_retriable=True
+        )
 
     target_instance = healthy_instances[0]
     logger.info("Executing kubectl drain via SSM", extra={'target_instance': target_instance, 'node_name': node_name})
@@ -351,7 +377,12 @@ def drain_node(node_name, terminating_instance_id):
         command_id = response['Command']['CommandId']
         logger.info("SSM drain command sent", extra={'command_id': command_id, 'target_instance': target_instance})
     except Exception as e:
-        raise NodeDrainError(f"Failed to send SSM drain command: {str(e)}", is_retriable=True)
+        raise NodeDrainError(
+            f"Failed to send SSM drain command: {str(e)}. "
+            f"SSM agent may not be running or instance may be unreachable. "
+            f"Check SSM agent status and IAM role permissions on the target instance.",
+            is_retriable=True
+        )
 
     # Wait for command completion
     return wait_for_drain_command(command_id, target_instance)
@@ -397,11 +428,18 @@ def wait_for_drain_command(command_id, instance_id):
                 return
 
             raise NodeDrainError(
-                f"kubectl drain failed with status {status}: {error_msg}",
+                f"kubectl drain failed with status {status}: {error_msg}. "
+                f"Common causes: PodDisruptionBudgets blocking eviction, stuck pods, or unresponsive nodes. "
+                f"Check pod status and PDB configurations in the cluster.",
                 is_retriable=(status == 'TimedOut')
             )
 
-    raise NodeDrainError("SSM drain command timed out waiting for response", is_retriable=True)
+    raise NodeDrainError(
+        f"SSM drain command timed out after {DRAIN_TIMEOUT}s waiting for response. "
+        f"Drain operation may be slow due to many pods or PodDisruptionBudgets. "
+        f"Check pod eviction status and consider increasing DRAIN_TIMEOUT.",
+        is_retriable=True
+    )
 
 
 def remove_etcd_member_with_retry(member_id, private_ip, terminating_instance_id):
@@ -424,7 +462,12 @@ def remove_etcd_member(member_id, private_ip, terminating_instance_id):
     healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
 
     if not healthy_instances:
-        raise EtcdRemovalError("No healthy control plane instances available", is_retriable=True)
+        raise EtcdRemovalError(
+            "No healthy control plane instances available for etcd member removal. "
+            "All instances may be unhealthy or terminating. "
+            "Check ASG status in EC2 console and verify instances are InService and passing health checks.",
+            is_retriable=True
+        )
 
     target_instance = healthy_instances[0]
     logger.info("Executing etcdctl via SSM", extra={'target_instance': target_instance, 'member_id': member_id})
@@ -465,7 +508,12 @@ def remove_etcd_member(member_id, private_ip, terminating_instance_id):
         command_id = response['Command']['CommandId']
         logger.info("SSM command sent", extra={'command_id': command_id, 'target_instance': target_instance})
     except Exception as e:
-        raise EtcdRemovalError(f"Failed to send SSM command: {str(e)}", is_retriable=True)
+        raise EtcdRemovalError(
+            f"Failed to send SSM command for etcd removal: {str(e)}. "
+            f"SSM agent may not be running or instance may be unreachable. "
+            f"Check SSM agent status and IAM role permissions on the target instance.",
+            is_retriable=True
+        )
 
     # Wait for command completion
     return wait_for_ssm_command(command_id, target_instance)
@@ -511,18 +559,28 @@ def wait_for_ssm_command(command_id, instance_id):
                 return
 
             raise EtcdRemovalError(
-                f"etcdctl failed with status {status}: {error_msg}",
+                f"etcdctl member remove failed with status {status}: {error_msg}. "
+                f"Common causes: network issues between etcd members, certificate problems, or etcd cluster not healthy. "
+                f"Check etcd endpoint health and verify certificates in /etc/kubernetes/pki/etcd/.",
                 is_retriable=(status == 'TimedOut')
             )
 
-    raise EtcdRemovalError("SSM command timed out waiting for response", is_retriable=True)
+    raise EtcdRemovalError(
+        f"SSM command timed out after {SSM_COMMAND_TIMEOUT}s waiting for response. "
+        f"etcd operation may be slow due to cluster state or network latency. "
+        f"Check etcd cluster health and network connectivity between nodes.",
+        is_retriable=True
+    )
 
 
 def get_healthy_control_plane_instances(exclude_instance=None):
     """Get list of healthy control plane instances, optionally excluding one"""
     asg_name = os.environ.get('CONTROL_PLANE_ASG_NAME')
     if not asg_name:
-        logger.error("CONTROL_PLANE_ASG_NAME environment variable not set")
+        logger.error("CONTROL_PLANE_ASG_NAME environment variable not set", extra={
+            'check': 'Verify Lambda environment variables are configured in CDK stack',
+            'possible_causes': 'Missing environment variable configuration in ControlPlaneStack'
+        })
         return []
 
     try:
@@ -555,7 +613,11 @@ def get_healthy_control_plane_instances(exclude_instance=None):
         return healthy_instances
 
     except Exception as e:
-        logger.error("Error finding healthy instances", extra={'error': str(e)})
+        logger.error("Error finding healthy control plane instances", extra={
+            'error': str(e),
+            'check': 'Verify ASG exists and Lambda has ec2:DescribeInstances and autoscaling:DescribeAutoScalingGroups permissions',
+            'possible_causes': 'ASG not found, IAM permission issues, or AWS API errors'
+        })
         return []
 
 
@@ -578,7 +640,12 @@ def complete_lifecycle_action(params, result):
         logger.info("Completed lifecycle action", extra={'instance_id': params['instance_id'], 'result': result})
     except Exception as e:
         # This is critical - if we can't complete the action, the instance hangs
-        logger.error("CRITICAL: Failed to complete lifecycle action", extra={'error': str(e), 'instance_id': params['instance_id']})
+        logger.error("CRITICAL: Failed to complete lifecycle action", extra={
+            'error': str(e),
+            'instance_id': params['instance_id'],
+            'check': 'Verify Lambda has autoscaling:CompleteLifecycleAction permission and lifecycle hook exists',
+            'possible_causes': 'Lifecycle hook timeout exceeded, IAM permission issues, or invalid hook token'
+        })
 
         # Try one more time with just instance ID (without token)
         try:
@@ -590,7 +657,12 @@ def complete_lifecycle_action(params, result):
             )
             logger.info("Completed lifecycle action on retry (without token)", extra={'instance_id': params['instance_id']})
         except Exception as e2:
-            logger.error("CRITICAL: Retry also failed", extra={'error': str(e2), 'instance_id': params['instance_id']})
+            logger.error("CRITICAL: Retry also failed - instance will hang until lifecycle hook timeout", extra={
+                'error': str(e2),
+                'instance_id': params['instance_id'],
+                'check': 'Check ASG lifecycle hook configuration and Lambda IAM role',
+                'possible_causes': 'Lifecycle hook may have already timed out or been completed by another process'
+            })
             # At this point, the instance will time out based on the lifecycle hook timeout
 `;
 }
