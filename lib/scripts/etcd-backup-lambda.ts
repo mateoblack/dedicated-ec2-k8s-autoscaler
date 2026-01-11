@@ -53,7 +53,10 @@ def handler(event, context):
         healthy_instances = get_healthy_control_plane_instances()
 
         if not healthy_instances:
-            logger.error("No healthy control plane instances found for backup")
+            logger.error("No healthy control plane instances found for backup", extra={
+                'check': 'Verify ASG health in EC2 console and check instance lifecycle states',
+                'possible_causes': 'All instances unhealthy, ASG scaling to zero, or instances still launching'
+            })
             try:
                 metrics.put_metric('BackupFailure', 1, COUNT)
                 duration_ms = time.time() * 1000 - start_time
@@ -100,7 +103,12 @@ def handler(event, context):
             return {'statusCode': 500, 'body': 'Backup failed after all retries'}
 
     except Exception as e:
-        logger.error("Backup failed", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
+        logger.error("Backup failed", extra={
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'check': 'Check etcd health on control plane nodes and verify S3 bucket permissions',
+            'possible_causes': 'etcd unhealthy, disk space issues, S3 access denied, or SSM command failures'
+        }, exc_info=True)
         try:
             metrics.put_metric('BackupFailure', 1, COUNT)
             duration_ms = time.time() * 1000 - start_time
@@ -115,7 +123,10 @@ def get_healthy_control_plane_instances():
     """Get list of healthy control plane instances"""
     asg_name = os.environ.get('CONTROL_PLANE_ASG_NAME')
     if not asg_name:
-        logger.error("CONTROL_PLANE_ASG_NAME environment variable not set")
+        logger.error("CONTROL_PLANE_ASG_NAME environment variable not set", extra={
+            'check': 'Verify Lambda environment variables are configured in CDK stack',
+            'possible_causes': 'Missing environment variable configuration in ControlPlaneStack'
+        })
         return []
 
     try:
@@ -148,7 +159,11 @@ def get_healthy_control_plane_instances():
         return healthy_instances
 
     except Exception as e:
-        logger.error("Error finding healthy instances", extra={'error': str(e)})
+        logger.error("Error finding healthy control plane instances", extra={
+            'error': str(e),
+            'check': 'Verify ASG exists and Lambda has ec2:DescribeInstances and autoscaling:DescribeAutoScalingGroups permissions',
+            'possible_causes': 'ASG not found, IAM permission issues, or AWS API errors'
+        })
         return []
 
 
@@ -183,7 +198,7 @@ export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key
 # Check etcd health first
 echo "Checking etcd health..."
 if ! etcdctl endpoint health; then
-    echo "ERROR: etcd is not healthy"
+    echo "ERROR: etcd is not healthy. Check etcd pod status with 'kubectl get pods -n kube-system' and verify certificates in /etc/kubernetes/pki/etcd/. Common causes: etcd container crashed, disk full, or certificate expiration."
     exit 1
 fi
 
@@ -201,7 +216,7 @@ SNAPSHOT_REVISION=$(echo "$SNAPSHOT_STATUS" | grep -o '"revision":[0-9]*' | cut 
 
 # Validate snapshot integrity - hash must be present and non-zero
 if [ -z "$SNAPSHOT_HASH" ] || [ "$SNAPSHOT_HASH" = "0" ]; then
-    echo "ERROR: Snapshot integrity check failed - invalid or corrupt snapshot"
+    echo "ERROR: Snapshot integrity check failed - invalid or corrupt snapshot. The etcdctl snapshot status returned an invalid hash which indicates data corruption. Try running 'etcdctl endpoint health' to verify etcd cluster state. Recovery may require restoring from a previous backup."
     echo "Snapshot status: $SNAPSHOT_STATUS"
     exit 1
 fi
@@ -233,7 +248,12 @@ echo "BACKUP_SUCCESS key={s3_key} size=$SNAPSHOT_SIZE hash=$SNAPSHOT_HASH"
         command_id = response['Command']['CommandId']
         logger.info("SSM backup command sent", extra={'command_id': command_id, 'instance_id': instance_id})
     except Exception as e:
-        raise BackupError(f"Failed to send SSM command: {str(e)}", is_retriable=True)
+        raise BackupError(
+            f"Failed to send SSM backup command: {str(e)}. "
+            f"SSM agent may not be running or instance may be unreachable. "
+            f"Check SSM agent status and IAM role permissions on the target instance.",
+            is_retriable=True
+        )
 
     # Wait for command completion
     return wait_for_backup_command(command_id, instance_id, s3_key)
@@ -275,7 +295,11 @@ def wait_for_backup_command(command_id, instance_id, s3_key):
                 except Exception:
                     pass
                 return {'key': s3_key, 'size': backup_size}
-            raise BackupError("Backup command succeeded but no success marker found")
+            raise BackupError(
+                "Backup command succeeded but no success marker (BACKUP_SUCCESS) found in output. "
+                "The backup script may have completed without writing to S3. "
+                "Check SSM command output logs and verify S3 bucket write permissions."
+            )
 
         elif status == 'InProgress' or status == 'Pending':
             continue
@@ -285,10 +309,17 @@ def wait_for_backup_command(command_id, instance_id, s3_key):
             stdout = result.get('StandardOutputContent', '')
             error_msg = stderr or stdout or 'Unknown error'
             raise BackupError(
-                f"Backup command failed with status {status}: {error_msg}",
+                f"Backup command failed with status {status}: {error_msg}. "
+                f"Common causes: etcd unhealthy, insufficient disk space, S3 upload failed, or certificate issues. "
+                f"Check etcd endpoint health and verify /tmp has sufficient space.",
                 is_retriable=(status == 'TimedOut')
             )
 
-    raise BackupError("SSM backup command timed out waiting for response", is_retriable=True)
+    raise BackupError(
+        f"SSM backup command timed out after {SSM_COMMAND_TIMEOUT}s waiting for response. "
+        f"Backup may be slow due to large etcd database or slow S3 upload. "
+        f"Check SSM command status in AWS console and consider increasing SSM_COMMAND_TIMEOUT.",
+        is_retriable=True
+    )
 `;
 }
