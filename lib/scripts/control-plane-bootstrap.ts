@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import { getBashRetryFunctions } from './bash-retry';
 
 /**
  * Creates the control plane bootstrap script for Kubernetes cluster initialization and joining.
@@ -134,59 +135,7 @@ release_init_lock() {
     fi
 }
 
-# Retry helper function with exponential backoff
-# Usage: retry_command <command>
-# Returns: 0 on success, 1 on failure after all retries
-retry_command() {
-    local cmd="$1"
-    local attempt=1
-    local delay=$RETRY_DELAY
-
-    while [ $attempt -le $MAX_RETRIES ]; do
-        echo "Executing (attempt $attempt/$MAX_RETRIES): $cmd"
-
-        if eval "$cmd"; then
-            return 0
-        fi
-
-        if [ $attempt -lt $MAX_RETRIES ]; then
-            echo "Command failed, retrying in \${delay}s..."
-            sleep $delay
-            delay=$((delay * 2))  # Exponential backoff
-        fi
-
-        attempt=$((attempt + 1))
-    done
-
-    echo "ERROR: Command failed after $MAX_RETRIES attempts: $cmd"
-    return 1
-}
-
-# Retry helper that captures output
-# Usage: result=$(retry_command_output <command>)
-retry_command_output() {
-    local cmd="$1"
-    local attempt=1
-    local delay=$RETRY_DELAY
-    local output=""
-
-    while [ $attempt -le $MAX_RETRIES ]; do
-        output=$(eval "$cmd" 2>/dev/null)
-        if [ $? -eq 0 ] && [ -n "$output" ]; then
-            echo "$output"
-            return 0
-        fi
-
-        if [ $attempt -lt $MAX_RETRIES ]; then
-            sleep $delay
-            delay=$((delay * 2))
-        fi
-
-        attempt=$((attempt + 1))
-    done
-
-    return 1
-}
+${getBashRetryFunctions()}
 
 # Get instance metadata (with retries for IMDS)
 get_instance_metadata() {
