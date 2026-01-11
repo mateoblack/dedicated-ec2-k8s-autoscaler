@@ -4,18 +4,16 @@
  */
 
 import { getPythonRetryUtils } from './python-retry';
+import { getPythonLoggingSetup } from './python-logging';
 
 export function createEtcdBackupLambdaCode(clusterName: string, backupBucket: string): string {
   return `
 import json
 import boto3
 import os
-import logging
 import time
-from datetime import datetime
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+\${getPythonLoggingSetup()}
 
 ec2 = boto3.client('ec2')
 autoscaling = boto3.client('autoscaling')
@@ -40,8 +38,11 @@ def handler(event, context):
     Scheduled handler to create etcd snapshots and upload to S3.
     Runs every 6 hours via EventBridge schedule.
     """
+    logger = setup_logging(context)
+    cluster_name = os.environ['CLUSTER_NAME']
+
     try:
-        logger.info(f"Starting scheduled etcd backup for cluster {os.environ['CLUSTER_NAME']}")
+        logger.info("Starting scheduled etcd backup", extra={'cluster_name': cluster_name})
 
         # Find a healthy control plane instance
         healthy_instances = get_healthy_control_plane_instances()
@@ -51,7 +52,7 @@ def handler(event, context):
             return {'statusCode': 500, 'body': 'No healthy instances'}
 
         target_instance = healthy_instances[0]
-        logger.info(f"Using instance {target_instance} for backup")
+        logger.info("Using instance for backup", extra={'instance_id': target_instance})
 
         # Create backup with retries using shared utility
         backup_key = retry_with_backoff(
@@ -63,13 +64,13 @@ def handler(event, context):
         )
 
         if backup_key:
-            logger.info(f"Backup completed successfully: {backup_key}")
+            logger.info("Backup completed successfully", extra={'backup_key': backup_key})
             return {'statusCode': 200, 'body': f'Backup created: {backup_key}'}
         else:
             return {'statusCode': 500, 'body': 'Backup failed after all retries'}
 
     except Exception as e:
-        logger.error(f"Backup failed: {str(e)}", exc_info=True)
+        logger.error("Backup failed", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
         return {'statusCode': 500, 'body': f'Backup failed: {str(e)}'}
 
 
@@ -106,11 +107,11 @@ def get_healthy_control_plane_instances():
                 if instance['State']['Name'] == 'running':
                     healthy_instances.append(instance['InstanceId'])
 
-        logger.info(f"Found {len(healthy_instances)} healthy control plane instances")
+        logger.info("Found healthy control plane instances", extra={'healthy_count': len(healthy_instances)})
         return healthy_instances
 
     except Exception as e:
-        logger.error(f"Error finding healthy instances: {str(e)}")
+        logger.error("Error finding healthy instances", extra={'error': str(e)})
         return []
 
 
@@ -193,7 +194,7 @@ echo "BACKUP_SUCCESS key={s3_key} size=$SNAPSHOT_SIZE hash=$SNAPSHOT_HASH"
             TimeoutSeconds=SSM_COMMAND_TIMEOUT
         )
         command_id = response['Command']['CommandId']
-        logger.info(f"SSM backup command sent: {command_id}")
+        logger.info("SSM backup command sent", extra={'command_id': command_id, 'instance_id': instance_id})
     except Exception as e:
         raise BackupError(f"Failed to send SSM command: {str(e)}", is_retriable=True)
 
@@ -217,14 +218,14 @@ def wait_for_backup_command(command_id, instance_id, s3_key):
                 InstanceId=instance_id
             )
         except ssm.exceptions.InvocationDoesNotExist:
-            logger.info("Backup command invocation not ready yet...")
+            logger.info("Backup command invocation not ready yet", extra={'command_id': command_id})
             continue
 
         status = result['Status']
 
         if status == 'Success':
             stdout = result.get('StandardOutputContent', '')
-            logger.info(f"Backup command succeeded: {stdout}")
+            logger.info("Backup command succeeded", extra={'command_id': command_id, 's3_key': s3_key})
             # Extract backup info from output
             if 'BACKUP_SUCCESS' in stdout:
                 return s3_key
