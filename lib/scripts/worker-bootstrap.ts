@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import { getBashRetryFunctions } from './bash-retry';
 
 /**
  * Creates the worker node bootstrap script for joining an existing Kubernetes cluster.
@@ -56,30 +57,7 @@ cleanup_on_failure() {
 # Set trap for cleanup on error
 trap cleanup_on_failure EXIT
 
-# Retry helper that captures output
-retry_command_output() {
-    local cmd="$1"
-    local attempt=1
-    local delay=$RETRY_DELAY
-    local output=""
-
-    while [ $attempt -le $MAX_RETRIES ]; do
-        output=$(eval "$cmd" 2>/dev/null)
-        if [ $? -eq 0 ] && [ -n "$output" ]; then
-            echo "$output"
-            return 0
-        fi
-
-        if [ $attempt -lt $MAX_RETRIES ]; then
-            sleep $delay
-            delay=$((delay * 2))
-        fi
-
-        attempt=$((attempt + 1))
-    done
-
-    return 1
-}
+${getBashRetryFunctions()}
 
 # Get instance metadata (with IMDSv2 support)
 get_instance_metadata() {
