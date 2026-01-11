@@ -96,7 +96,10 @@ if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
     exit 1
 fi
 
-log_info "Instance metadata retrieved" "instance_id=$INSTANCE_ID" "private_ip=$PRIVATE_IP" "cluster=${clusterName}" "node_type=worker"
+# Initialize trace ID for operation correlation
+init_trace_id
+
+log_info "Instance metadata retrieved" "instance_id=\$INSTANCE_ID" "private_ip=\$PRIVATE_IP" "cluster=${clusterName}" "node_type=worker" "trace_id=\$TRACE_ID"
 
 # Wait for cluster to be initialized
 log_info "Waiting for cluster to be initialized"
