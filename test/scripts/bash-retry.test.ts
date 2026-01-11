@@ -184,6 +184,49 @@ describe('Bash Retry Functions', () => {
     });
   });
 
+  describe('retry metrics integration', () => {
+    test('checks if emit_metric is available before emitting', () => {
+      expect(retryFunctions).toContain('command -v emit_metric >/dev/null 2>&1 && emit_metric');
+    });
+
+    test('emits RetryAttempt metric on retry attempts', () => {
+      expect(retryFunctions).toContain('emit_metric "RetryAttempt" 1 "Count"');
+    });
+
+    test('emits RetryExhausted metric when all retries fail', () => {
+      expect(retryFunctions).toContain('emit_metric "RetryExhausted" 1 "Count"');
+    });
+
+    test('only emits RetryAttempt after first attempt', () => {
+      // Should check attempt > 1 before emitting
+      expect(retryFunctions).toContain('if [ $attempt -gt 1 ]');
+    });
+
+    test('retry_command has RetryAttempt emission', () => {
+      // Extract retry_command function body
+      const retryCommandMatch = retryFunctions.match(
+        /retry_command\(\)[\s\S]*?^}$/m
+      );
+      expect(retryCommandMatch).toBeTruthy();
+      const retryCommandBody = retryCommandMatch![0];
+
+      expect(retryCommandBody).toContain('emit_metric "RetryAttempt"');
+      expect(retryCommandBody).toContain('emit_metric "RetryExhausted"');
+    });
+
+    test('retry_command_timeout has RetryAttempt emission', () => {
+      // Extract retry_command_timeout function body
+      const timeoutFnMatch = retryFunctions.match(
+        /retry_command_timeout\(\)[\s\S]*?^}$/m
+      );
+      expect(timeoutFnMatch).toBeTruthy();
+      const timeoutFnBody = timeoutFnMatch![0];
+
+      expect(timeoutFnBody).toContain('emit_metric "RetryAttempt"');
+      expect(timeoutFnBody).toContain('emit_metric "RetryExhausted"');
+    });
+  });
+
   describe('retry_command_output_timeout function', () => {
     test('contains retry_command_output_timeout function', () => {
       expect(retryFunctions).toContain('retry_command_output_timeout()');

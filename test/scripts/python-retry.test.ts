@@ -168,6 +168,40 @@ describe('Python Retry Utils', () => {
     });
   });
 
+  describe('retry metrics integration', () => {
+    test('has metrics_logger parameter in retry_with_backoff', () => {
+      expect(retryUtils).toContain('metrics_logger=None');
+    });
+
+    test('documents metrics_logger parameter in docstring', () => {
+      expect(retryUtils).toContain('metrics_logger: Optional MetricsLogger');
+    });
+
+    test('emits RetryAttempt metric on retry attempts', () => {
+      expect(retryUtils).toContain("metrics_logger.add_metric('RetryAttempt', 1, 'Count')");
+    });
+
+    test('emits RetryExhausted metric when all retries fail', () => {
+      expect(retryUtils).toContain("metrics_logger.add_metric('RetryExhausted', 1, 'Count')");
+    });
+
+    test('only emits RetryAttempt after first attempt', () => {
+      expect(retryUtils).toContain('if metrics_logger and attempt > 1:');
+    });
+
+    test('includes Operation dimension with operation_name', () => {
+      expect(retryUtils).toContain("metrics_logger.add_dimension('Operation', operation_name)");
+    });
+
+    test('flushes metrics after emission', () => {
+      expect(retryUtils).toContain('metrics_logger.flush()');
+    });
+
+    test('metrics are optional (checks if metrics_logger exists)', () => {
+      expect(retryUtils).toContain('if metrics_logger:');
+    });
+  });
+
   describe('retry_with_circuit_breaker function', () => {
     test('defines retry_with_circuit_breaker function', () => {
       expect(retryUtils).toContain('def retry_with_circuit_breaker(');
@@ -201,6 +235,19 @@ describe('Python Retry Utils', () => {
     test('documents circuit breaker integration', () => {
       expect(retryUtils).toContain('protected by circuit breaker');
       expect(retryUtils).toContain('Records success/failure to circuit breaker');
+    });
+
+    test('has metrics_logger parameter', () => {
+      // Verify metrics_logger appears in circuit breaker function signature area
+      const cbFnMatch = retryUtils.match(
+        /def retry_with_circuit_breaker\([\s\S]*?\):/
+      );
+      expect(cbFnMatch).toBeTruthy();
+      expect(cbFnMatch![0]).toContain('metrics_logger=None');
+    });
+
+    test('passes metrics_logger to retry_with_backoff', () => {
+      expect(retryUtils).toContain('metrics_logger=metrics_logger');
     });
   });
 });
