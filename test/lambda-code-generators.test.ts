@@ -40,7 +40,8 @@ describe('Lambda Code Generators', () => {
 
       test('configures structured logging', () => {
         expect(code).toContain('getPythonLoggingSetup()');
-        expect(code).toContain('logger = setup_logging(context)');
+        // setup_logging may include optional trace_id parameter
+        expect(code).toContain('logger = setup_logging(context');
       });
     });
 
@@ -162,7 +163,8 @@ describe('Lambda Code Generators', () => {
 
       test('configures structured logging', () => {
         expect(code).toContain('getPythonLoggingSetup()');
-        expect(code).toContain('logger = setup_logging(context)');
+        // setup_logging may include optional trace_id parameter
+        expect(code).toContain('logger = setup_logging(context');
       });
     });
 
@@ -281,7 +283,8 @@ describe('Lambda Code Generators', () => {
 
       test('configures structured logging', () => {
         expect(code).toContain('getPythonLoggingSetup()');
-        expect(code).toContain('logger = setup_logging(context)');
+        // setup_logging may include optional trace_id parameter
+        expect(code).toContain('logger = setup_logging(context');
       });
     });
 
