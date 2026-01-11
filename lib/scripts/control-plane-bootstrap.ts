@@ -64,33 +64,34 @@ cleanup_on_failure() {
     # Remove etcd member registration from DynamoDB if registered
     if [ "\$ETCD_REGISTERED" = "true" ]; then
         echo "Removing etcd member registration from DynamoDB..."
-        # We stored it with MemberId = etcd_member_id, need to find and delete
-        aws dynamodb query \
+        # Get member info from DynamoDB
+        member_info=\$(aws dynamodb query \
             --table-name "${clusterName}-etcd-members" \
             --index-name "InstanceIdIndex" \
             --key-condition-expression "InstanceId = :iid" \
             --expression-attribute-values '{":iid":{"S":"'\$INSTANCE_ID'"}}' \
             --query 'Items[0]' \
-            --output json --region $REGION 2>/dev/null | \
-        python3 -c "
+            --output json --region $REGION 2>/dev/null || echo "{}")
+
+        # Parse with Python and capture output using process substitution
+        # This avoids the subshell variable scope issue with pipe-into-block
+        read cluster_id member_id < <(echo "\$member_info" | python3 -c "
 import sys, json
 try:
     item = json.load(sys.stdin)
     if item:
-        print(item.get('ClusterId', {}).get('S', ''))
-        print(item.get('MemberId', {}).get('S', ''))
+        print(item.get('ClusterId', {}).get('S', ''), item.get('MemberId', {}).get('S', ''))
 except:
-    pass
-" | {
-            read cluster_id
-            read member_id
-            if [ -n "\$cluster_id" ] && [ -n "\$member_id" ]; then
-                aws dynamodb delete-item \
-                    --table-name "${clusterName}-etcd-members" \
-                    --key '{"ClusterId":{"S":"'\$cluster_id'"},"MemberId":{"S":"'\$member_id'"}}' \
-                    --region $REGION 2>/dev/null || true
-            fi
-        }
+    print('', '')
+")
+
+        # Delete if we got valid IDs
+        if [ -n "\$cluster_id" ] && [ -n "\$member_id" ]; then
+            aws dynamodb delete-item \
+                --table-name "${clusterName}-etcd-members" \
+                --key '{"ClusterId":{"S":"'\$cluster_id'"},"MemberId":{"S":"'\$member_id'"}}' \
+                --region $REGION 2>/dev/null || true
+        fi
     fi
 
     # Release cluster init lock if we held it
