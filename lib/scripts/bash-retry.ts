@@ -63,9 +63,9 @@ retry_command() {
 
     # Use structured logging if available, otherwise fall back to echo
     if command -v log_error >/dev/null 2>&1; then
-        log_error "Command failed after all retries" "attempts=$MAX_RETRIES" "command=$*"
+        log_error "Command failed after all retries" "attempts=$MAX_RETRIES" "command=$*" "check=Review command output above for the actual error" "hint=If error is consistent across retries, issue may be persistent not transient"
     else
-        echo "ERROR: Command failed after $MAX_RETRIES attempts: $*"
+        echo "ERROR: Command failed after $MAX_RETRIES attempts: $*. Check output above for error details."
     fi
     return 1
 }
