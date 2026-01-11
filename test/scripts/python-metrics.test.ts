@@ -5,7 +5,7 @@
  * code with the MetricsLogger class and EMF format compliance.
  */
 
-import { getPythonMetricsSetup } from '../../lib/scripts/python-metrics';
+import { getPythonMetricsSetup } from '../../lib/scripts';
 
 describe('Python Metrics Setup', () => {
   let metricsSetup: string;

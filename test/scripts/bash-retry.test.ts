@@ -5,7 +5,7 @@
  * code with retry logic, exponential backoff, and jitter for thundering herd prevention.
  */
 
-import { getBashRetryFunctions } from '../../lib/scripts/bash-retry';
+import { getBashRetryFunctions } from '../../lib/scripts';
 
 describe('Bash Retry Functions', () => {
   let retryFunctions: string;

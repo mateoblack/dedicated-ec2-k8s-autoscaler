@@ -5,7 +5,7 @@
  * code with retry_with_backoff function including jitter support.
  */
 
-import { getPythonRetryUtils } from '../../lib/scripts/python-retry';
+import { getPythonRetryUtils } from '../../lib/scripts';
 
 describe('Python Retry Utils', () => {
   let retryUtils: string;

@@ -5,7 +5,7 @@
  * code with all required logging functions and proper JSON formatting.
  */
 
-import { getPythonLoggingSetup } from '../../lib/scripts/python-logging';
+import { getPythonLoggingSetup } from '../../lib/scripts';
 
 describe('Python Logging Setup', () => {
   let loggingSetup: string;

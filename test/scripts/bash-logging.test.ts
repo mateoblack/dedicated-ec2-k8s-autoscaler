@@ -5,7 +5,7 @@
  * code with all required logging functions and proper JSON formatting.
  */
 
-import { getBashLoggingFunctions } from '../../lib/scripts/bash-logging';
+import { getBashLoggingFunctions } from '../../lib/scripts';
 import { execSync } from 'child_process';
 
 describe('Bash Logging Functions', () => {

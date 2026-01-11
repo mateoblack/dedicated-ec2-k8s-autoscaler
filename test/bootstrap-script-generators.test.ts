@@ -7,8 +7,10 @@
  */
 
 import * as cdk from 'aws-cdk-lib';
-import { createWorkerBootstrapScript } from '../lib/scripts/worker-bootstrap';
-import { createControlPlaneBootstrapScript } from '../lib/scripts/control-plane-bootstrap';
+import {
+  createWorkerBootstrapScript,
+  createControlPlaneBootstrapScript
+} from '../lib/scripts';
 
 describe('Bootstrap Script Generators', () => {
   let stack: cdk.Stack;

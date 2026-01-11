@@ -6,9 +6,11 @@
  * error classes, and retry patterns.
  */
 
-import { createEtcdLifecycleLambdaCode } from '../lib/scripts/etcd-lifecycle-lambda';
-import { createEtcdBackupLambdaCode } from '../lib/scripts/etcd-backup-lambda';
-import { createClusterHealthLambdaCode } from '../lib/scripts/cluster-health-lambda';
+import {
+  createEtcdLifecycleLambdaCode,
+  createEtcdBackupLambdaCode,
+  createClusterHealthLambdaCode
+} from '../lib/scripts';
 
 describe('Lambda Code Generators', () => {
   describe('createEtcdLifecycleLambdaCode', () => {

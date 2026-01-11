@@ -27,9 +27,11 @@ import * as os from 'os';
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 
-import { getBashRetryFunctions } from '../lib/scripts/bash-retry';
-import { createControlPlaneBootstrapScript } from '../lib/scripts/control-plane-bootstrap';
-import { createWorkerBootstrapScript } from '../lib/scripts/worker-bootstrap';
+import {
+  getBashRetryFunctions,
+  createControlPlaneBootstrapScript,
+  createWorkerBootstrapScript
+} from '../lib/scripts';
 
 // Shellcheck issue interface for JSON output parsing
 interface ShellcheckIssue {

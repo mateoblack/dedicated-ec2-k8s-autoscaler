@@ -5,8 +5,7 @@
  * code with all required metrics functions and proper AWS CLI syntax.
  */
 
-import { getBashMetricsFunctions } from '../../lib/scripts/bash-metrics';
-import { getBashLoggingFunctions } from '../../lib/scripts/bash-logging';
+import { getBashMetricsFunctions, getBashLoggingFunctions } from '../../lib/scripts';
 
 describe('Bash Metrics Functions', () => {
   let metricsFunctions: string;
