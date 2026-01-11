@@ -595,4 +595,33 @@ describe('Before Terminate Lifecycle Hook', () => {
       expect(lifecycleLambdaCode).toContain('private_ip');
     });
   });
+
+  describe('Trace ID Correlation', () => {
+    test('generates trace_id at handler start', () => {
+      expect(lifecycleLambdaCode).toContain('trace_id = uuid.uuid4().hex[:16]');
+    });
+
+    test('has global _trace_id variable for SSM command correlation', () => {
+      // Global _trace_id allows SSM commands to reference the trace ID
+      expect(lifecycleLambdaCode).toContain('# Global trace ID for correlation');
+    });
+
+    test('sets _trace_id in handler', () => {
+      expect(lifecycleLambdaCode).toContain('_trace_id = trace_id');
+    });
+
+    test('passes trace_id to setup_logging', () => {
+      expect(lifecycleLambdaCode).toContain('setup_logging(context, trace_id)');
+    });
+
+    test('exports TRACE_ID in SSM commands', () => {
+      // SSM commands should export TRACE_ID for correlation on target instances
+      expect(lifecycleLambdaCode).toContain('export TRACE_ID=');
+    });
+
+    test('includes trace_id in SSM log messages', () => {
+      // Log messages should include trace_id for correlation in CloudWatch
+      expect(lifecycleLambdaCode).toContain("'trace_id': _trace_id");
+    });
+  });
 });

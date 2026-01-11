@@ -46,6 +46,9 @@ class QuorumRiskError(Exception):
     """Raised when removal would risk etcd quorum"""
     pass
 
+# Global trace ID for correlation across SSM commands
+_trace_id = None
+
 ${getPythonRetryUtils()}
 
 def handler(event, context):
@@ -55,7 +58,10 @@ def handler(event, context):
     Ensures etcd member is safely removed before instance termination.
     If removal fails, we ABANDON the termination to protect cluster quorum.
     """
-    logger = setup_logging(context)
+    global _trace_id
+    trace_id = uuid.uuid4().hex[:16]
+    _trace_id = trace_id
+    logger = setup_logging(context, trace_id)
     lifecycle_params = None
     start_time = time.time() * 1000  # For duration tracking
     metrics = create_metrics_logger('K8sCluster/EtcdLifecycle', context)
@@ -336,6 +342,7 @@ def drain_node(node_name, terminating_instance_id):
     # --timeout=90s: Total timeout for the drain operation
     command = f\"\"\"
     set -e
+    export TRACE_ID="{_trace_id}"
     export KUBECONFIG=/etc/kubernetes/admin.conf
 
     # First check if the node exists
@@ -376,7 +383,7 @@ def drain_node(node_name, terminating_instance_id):
             TimeoutSeconds=DRAIN_TIMEOUT
         )
         command_id = response['Command']['CommandId']
-        logger.info("SSM drain command sent", extra={'command_id': command_id, 'target_instance': target_instance})
+        logger.info("SSM drain command sent", extra={'command_id': command_id, 'target_instance': target_instance, 'trace_id': _trace_id})
     except Exception as e:
         raise NodeDrainError(
             f"Failed to send SSM drain command: {str(e)}. "
@@ -477,6 +484,7 @@ def remove_etcd_member(member_id, private_ip, terminating_instance_id):
     # Execute etcdctl member remove via SSM
     command = f\"\"\"
     set -e
+    export TRACE_ID="{_trace_id}"
     export ETCDCTL_API=3
     export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379
     export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt
@@ -508,7 +516,7 @@ def remove_etcd_member(member_id, private_ip, terminating_instance_id):
             TimeoutSeconds=SSM_COMMAND_TIMEOUT
         )
         command_id = response['Command']['CommandId']
-        logger.info("SSM command sent", extra={'command_id': command_id, 'target_instance': target_instance})
+        logger.info("SSM command sent", extra={'command_id': command_id, 'target_instance': target_instance, 'trace_id': _trace_id})
     except Exception as e:
         raise EtcdRemovalError(
             f"Failed to send SSM command for etcd removal: {str(e)}. "
