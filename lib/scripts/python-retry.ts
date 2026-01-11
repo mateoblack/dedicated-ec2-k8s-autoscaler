@@ -13,18 +13,25 @@
  */
 
 /**
- * Returns Python code string containing retry utility function.
+ * Returns Python code string containing retry utility functions.
  *
  * The returned string includes:
  * - retry_with_backoff(): Generic retry function with exponential backoff and jitter
+ * - CircuitBreaker: Class for fail-fast behavior during service outages
+ * - retry_with_circuit_breaker(): Retry function protected by circuit breaker
  *
- * The function handles:
+ * The retry function handles:
  * - Exponential backoff (base_delay * 2^attempt)
  * - Jitter to decorrelate retries (configurable factor, default 0.3)
  * - Checking is_retriable attribute on exceptions
  * - Logging of attempts and failures
  *
- * @returns Python code string with retry utility function
+ * The circuit breaker provides:
+ * - Three states: CLOSED (normal), OPEN (fail-fast), HALF_OPEN (testing)
+ * - Configurable failure threshold and reset timeout
+ * - Automatic state transitions based on success/failure
+ *
+ * @returns Python code string with retry utility functions
  */
 export function getPythonRetryUtils(): string {
   return `
@@ -131,5 +138,53 @@ class CircuitBreaker:
         self.last_failure_time = time.time()
         if self.failures >= self.failure_threshold:
             self.state = 'OPEN'
+
+
+def retry_with_circuit_breaker(
+    operation,
+    operation_name,
+    circuit_breaker,
+    max_retries=3,
+    base_delay=5,
+    jitter_factor=0.3,
+    retriable_exceptions=(Exception,)
+):
+    """
+    Execute operation with retry logic protected by circuit breaker.
+
+    If circuit is OPEN, fails immediately without attempting operation.
+    Records success/failure to circuit breaker for state transitions.
+
+    Args:
+        operation: Callable to execute (no arguments - use closure or functools.partial)
+        operation_name: Human-readable name for logging
+        circuit_breaker: CircuitBreaker instance to check/update state
+        max_retries: Maximum number of attempts
+        base_delay: Base delay in seconds (exponential: base_delay * 2^attempt)
+        jitter_factor: Random jitter factor (0.3 = up to 30% additional delay)
+        retriable_exceptions: Tuple of exception types to catch and retry
+
+    Returns:
+        Result of operation() on success, or None on failure
+    """
+    if not circuit_breaker.can_execute():
+        logger.warning(f"Circuit breaker OPEN for {operation_name}, failing fast")
+        return None
+
+    result = retry_with_backoff(
+        operation,
+        operation_name,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        jitter_factor=jitter_factor,
+        retriable_exceptions=retriable_exceptions
+    )
+
+    if result is not None:
+        circuit_breaker.record_success()
+    else:
+        circuit_breaker.record_failure()
+
+    return result
 `;
 }
