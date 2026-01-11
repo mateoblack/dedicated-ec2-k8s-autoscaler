@@ -90,7 +90,7 @@ Plans:
 
 Plans:
 - [x] 12-01: Bash retry with jitter
-- [ ] 12-02: Bash retry with timeout
+- [x] 12-02: Bash retry with timeout
 - [ ] 12-03: Python retry with jitter
 - [ ] 12-04: Circuit breaker pattern
 - [ ] 12-05: Retry metrics integration
@@ -124,5 +124,5 @@ Phases execute in numeric order: 1 → 2 → ... → 8 → 9 → 10 → 11 → 1
 | 9. Structured Logging | v1.1 | 4/4 | Complete | 2026-01-11 |
 | 10. CloudWatch Metrics | v1.1 | 4/4 | Complete | 2026-01-11 |
 | 11. Error Messages | v1.1 | 2/2 | Complete | 2026-01-11 |
-| 12. Graceful Recovery | v1.1 | 1/5 | In progress | - |
+| 12. Graceful Recovery | v1.1 | 2/5 | In progress | - |
 | 13. Tracing | v1.1 | 0/? | Not started | - |
