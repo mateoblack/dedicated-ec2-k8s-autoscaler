@@ -11,3 +11,7 @@ export { createClusterHealthLambdaCode } from './cluster-health-lambda';
 // Bootstrap script generators
 export { createWorkerBootstrapScript } from './worker-bootstrap';
 export { createControlPlaneBootstrapScript } from './control-plane-bootstrap';
+
+// Shared bash utilities
+export { getBashRetryFunctions } from './bash-retry';
+export { getBashLoggingFunctions } from './bash-logging';
