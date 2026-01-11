@@ -87,5 +87,49 @@ def retry_with_backoff(
 
     logger.error(f"All {max_retries} attempts failed for {operation_name}. Last error: {str(last_error)}")
     return None
+
+
+class CircuitBreaker:
+    """
+    Simple circuit breaker for fail-fast behavior during service outages.
+
+    States:
+    - CLOSED: Normal operation, requests pass through
+    - OPEN: Service down, requests fail immediately
+    - HALF_OPEN: Testing if service recovered
+
+    Transitions:
+    - CLOSED -> OPEN: After failure_threshold consecutive failures
+    - OPEN -> HALF_OPEN: After reset_timeout seconds
+    - HALF_OPEN -> CLOSED: On success
+    - HALF_OPEN -> OPEN: On failure
+    """
+
+    def __init__(self, failure_threshold=5, reset_timeout=60):
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self.failures = 0
+        self.last_failure_time = None
+        self.state = 'CLOSED'
+
+    def can_execute(self):
+        if self.state == 'CLOSED':
+            return True
+        if self.state == 'OPEN':
+            if time.time() - self.last_failure_time >= self.reset_timeout:
+                self.state = 'HALF_OPEN'
+                return True
+            return False
+        return True  # HALF_OPEN
+
+    def record_success(self):
+        self.failures = 0
+        self.state = 'CLOSED'
+
+    def record_failure(self):
+        self.failures += 1
+        self.last_failure_time = time.time()
+        if self.failures >= self.failure_threshold:
+            self.state = 'OPEN'
 `;
 }
