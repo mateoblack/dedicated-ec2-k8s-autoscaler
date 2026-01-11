@@ -297,7 +297,7 @@ def wait_for_backup_command(command_id, instance_id, s3_key):
                 backup_size = None
                 try:
                     import re
-                    size_match = re.search(r'size=(\d+)', stdout)
+                    size_match = re.search(r'size=(\\d+)', stdout)
                     if size_match:
                         backup_size = int(size_match.group(1))
                 except Exception:

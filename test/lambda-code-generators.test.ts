@@ -295,6 +295,54 @@ describe('Lambda Code Generators', () => {
         expect(code).toContain('export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key');
       });
     });
+
+    describe('snapshot integrity validation critical path', () => {
+      test('extracts hash from etcdctl snapshot status JSON output', () => {
+        expect(code).toContain('SNAPSHOT_HASH=$(echo "$SNAPSHOT_STATUS"');
+        expect(code).toContain('"hash"');
+      });
+
+      test('validates hash is not zero (corrupt snapshot detection)', () => {
+        expect(code).toContain('$SNAPSHOT_HASH" = "0"');
+      });
+
+      test('extracts revision for backup metadata', () => {
+        expect(code).toContain('SNAPSHOT_REVISION=$(echo "$SNAPSHOT_STATUS"');
+        expect(code).toContain('"revision"');
+      });
+
+      test('uploads with hash and revision in S3 metadata', () => {
+        expect(code).toContain('--metadata "hash=$SNAPSHOT_HASH,revision=$SNAPSHOT_REVISION');
+      });
+    });
+
+    describe('backup success detection critical path', () => {
+      test('checks for BACKUP_SUCCESS marker in output', () => {
+        expect(code).toContain("'BACKUP_SUCCESS' in stdout");
+      });
+
+      test('extracts backup size using regex pattern', () => {
+        expect(code).toContain("re.search(r'size=(\\d+)', stdout)");
+      });
+
+      test('returns S3 key on success', () => {
+        expect(code).toContain("return {'key': s3_key, 'size': backup_size}");
+      });
+    });
+
+    describe('SSM command polling critical path', () => {
+      test('polls with elapsed time tracking against max_wait', () => {
+        expect(code).toContain('while elapsed < max_wait:');
+      });
+
+      test('handles InProgress and Pending status during polling', () => {
+        expect(code).toContain("status == 'InProgress' or status == 'Pending'");
+      });
+
+      test('handles InvocationDoesNotExist exception', () => {
+        expect(code).toContain('ssm.exceptions.InvocationDoesNotExist');
+      });
+    });
   });
 
   describe('createClusterHealthLambdaCode', () => {
