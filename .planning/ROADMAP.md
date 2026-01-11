@@ -22,7 +22,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: Race Condition Fix** - Fix etcd member registration ordering bug
 - [x] **Phase 5: Eval Removal** - Replace eval usage with safer command execution patterns
 - [x] **Phase 6: Lambda Unit Tests** - Add unit tests for 5 createXxxCode methods
-- [ ] **Phase 7: Script Linting** - Add shellcheck integration and fix issues
+- [x] **Phase 7: Script Linting** - Add shellcheck integration and fix issues
 - [ ] **Phase 8: Documentation** - Add inline documentation to complex bootstrap sections
 
 ## Phase Details
@@ -66,15 +66,14 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### Phase 7: Script Linting
 **Goal**: Integrate shellcheck into the build/test pipeline and fix any issues it identifies in the bash bootstrap scripts
 **Depends on**: Phase 1-5 (scripts should be stable before linting)
-**Research**: Likely (shellcheck npm integration)
-**Research topics**: shellcheck npm package options, integrating shell linting with Jest/npm test, CI integration patterns
-**Plans**: TBD
+**Research**: Complete (shellcheck npm package with programmatic API)
+**Plans**: 1 (install shellcheck, create Jest test, fix warnings)
 
 ### Phase 8: Documentation
 **Goal**: Add inline documentation to complex bootstrap sections, explaining the "why" behind non-obvious code patterns
 **Depends on**: Phase 1-7 (document after code is stable)
 **Research**: Unlikely (internal documentation)
-**Plans**: TBD
+**Plans**: 1 (document DynamoDB locking, variable propagation, etcd/cert patterns)
 
 ## Progress
 
@@ -89,5 +88,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 4. Race Condition Fix | 1/1 | Complete | 2026-01-11 |
 | 5. Eval Removal | 1/1 | Complete | 2026-01-11 |
 | 6. Lambda Unit Tests | 2/2 | Complete | 2026-01-11 |
-| 7. Script Linting | 0/TBD | Not started | - |
+| 7. Script Linting | 1/1 | Complete | 2026-01-11 |
 | 8. Documentation | 0/TBD | Not started | - |

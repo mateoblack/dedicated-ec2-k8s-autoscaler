@@ -478,9 +478,10 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
     echo "RESTORE MODE DETECTED - Attempting disaster recovery"
     echo "Backup to restore: \$RESTORE_BACKUP"
 
-    # Check for stale restore lock before acquiring
-    # If a previous restore attempt crashed, the lock remains forever blocking DR
-    # Stale lock threshold: 30 minutes (1800 seconds) - restore should complete within this time
+    # WHY stale lock detection: A crashed restore leaves an orphan lock in DynamoDB.
+    # Without cleanup, DR is blocked forever - no node can acquire the restore lock.
+    # WHY 30-minute TTL: Restore (S3 download + etcd restore + kubeadm init) should
+    # complete within 30 min. Any lock older than that indicates a dead holder.
     RESTORE_LOCK_TTL=1800
 
     existing_lock=$(aws dynamodb get-item \\
@@ -512,7 +513,9 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
         fi
     fi
 
-    # Try to acquire restore lock
+    # WHY restore lock: Only one node should restore from backup. If multiple nodes
+    # attempt restore simultaneously, they'd each create separate single-node clusters.
+    # Losers of this lock race fall through to normal join logic once winner completes.
     if aws dynamodb put-item \\
         --table-name "${clusterName}-etcd-members" \\
         --item '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"restore-lock"},"InstanceId":{"S":"'$INSTANCE_ID'"},"Status":{"S":"RESTORING"},"CreatedAt":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' \\
@@ -564,12 +567,18 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
     BOOTSTRAP_STAGE="acquiring-lock"
 
     # Try to acquire cluster initialization lock using DynamoDB
+    # WHY DynamoDB lock: Multiple control planes may start simultaneously from ASG scaling.
+    # Only one node should initialize the cluster; others must wait then join.
+    # WHY attribute_not_exists: This is an atomic conditional write - if another node
+    # already inserted the lock, this put-item fails, ensuring exactly-once initialization.
     if aws dynamodb put-item \\
         --table-name "${clusterName}-bootstrap-lock" \\
         --item '{"LockName":{"S":"cluster-init"},"InstanceId":{"S":"'$INSTANCE_ID'"},"Status":{"S":"INITIALIZING"},"CreatedAt":{"S":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' \\
         --condition-expression "attribute_not_exists(LockName)" \\
         --region $REGION 2>/dev/null; then
 
+        # WHY track CLUSTER_LOCK_HELD: cleanup_on_failure needs to know if we own the lock.
+        # If bootstrap fails after acquiring lock, we must release it so another node can retry.
         CLUSTER_LOCK_HELD=true
         BOOTSTRAP_STAGE="kubeadm-init"
         echo "Acquired initialization lock - initializing cluster..."
@@ -1139,8 +1148,9 @@ fi
 request_new_control_plane_token() {
     echo "Requesting new join token from existing control plane node..."
 
-    # Try to acquire token refresh lock to prevent race conditions
-    # Multiple nodes might try to refresh simultaneously - only one should proceed
+    # WHY token-refresh lock: Multiple joining nodes may detect expired token simultaneously.
+    # Without coordination, they'd all call kubeadm token create, wasting resources and
+    # potentially causing SSM parameter update conflicts.
     local lock_acquired=false
     if aws dynamodb put-item \
         --table-name "${clusterName}-bootstrap-lock" \
@@ -1150,7 +1160,8 @@ request_new_control_plane_token() {
         lock_acquired=true
         echo "Acquired token refresh lock"
     else
-        # Check if token was recently updated - another node may have just refreshed
+        # WHY check recent update: Another node may have just refreshed the token.
+        # If token was updated in last 60s, our original "expired" check is stale - use new token.
         local token_updated=$(aws ssm get-parameter \
             --name "/${clusterName}/cluster/join-token-updated" \
             --query 'Parameter.Value' --output text --region $REGION 2>/dev/null)
@@ -1158,7 +1169,6 @@ request_new_control_plane_token() {
             local token_epoch=\$(date -d "\$token_updated" +%s 2>/dev/null || echo "0")
             local now_epoch=\$(date +%s)
             local age_seconds=\$((now_epoch - token_epoch))
-            # If token was updated in last 60 seconds, skip refresh
             if [ \$age_seconds -lt 60 ]; then
                 echo "Token was recently updated (\${age_seconds}s ago), skip refresh"
                 return 0
@@ -1195,10 +1205,13 @@ request_new_control_plane_token() {
     echo "Found control plane instance: \$CONTROL_PLANE_INSTANCE"
 
     # Create script to generate new token on control plane (with certificate-key for control plane join)
-    # The script also acquires a lock on the target node to prevent concurrent token generation
+    # WHY separate token-gen lock on target node: The requesting node holds token-refresh-lock
+    # to coordinate among requesters, but the target control plane also needs protection.
+    # Multiple SSM commands could arrive at the same control plane from different requesters.
     local token_script='
 export KUBECONFIG=/etc/kubernetes/admin.conf
-# Acquire lock on this node to prevent concurrent token generation
+# WHY token-gen-lock: Prevent concurrent kubeadm token create calls on this node.
+# kubeadm is not safe for concurrent execution and could corrupt cluster state.
 if ! aws dynamodb put-item \
     --table-name "'${clusterName}'-bootstrap-lock" \
     --item '"'"'{"LockName":{"S":"token-gen-lock"},"CreatedAt":{"S":"'"'"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"'"'"}}'"'"' \
