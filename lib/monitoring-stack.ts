@@ -395,7 +395,134 @@ export class MonitoringStack extends Construct {
       })
     );
 
-    // Row 5: DynamoDB
+    // Row 5: Custom Metrics (from Phase 10)
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Bootstrap Operations',
+        left: [
+          new cloudwatch.Metric({
+            namespace: `K8sCluster/${props.clusterName}`,
+            metricName: 'BootstrapSuccess',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Sum',
+            period: cdk.Duration.hours(1)
+          }),
+          new cloudwatch.Metric({
+            namespace: `K8sCluster/${props.clusterName}`,
+            metricName: 'BootstrapFailure',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Sum',
+            period: cdk.Duration.hours(1)
+          })
+        ],
+        width: 8,
+        height: 6
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'etcd Operations',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/EtcdLifecycle',
+            metricName: 'EtcdMemberRemovalSuccess',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Sum',
+            period: cdk.Duration.hours(1)
+          }),
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/EtcdLifecycle',
+            metricName: 'EtcdMemberRemovalFailure',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Sum',
+            period: cdk.Duration.hours(1)
+          }),
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/EtcdBackup',
+            metricName: 'BackupSuccess',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Sum',
+            period: cdk.Duration.hours(6)
+          })
+        ],
+        width: 8,
+        height: 6
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Cluster Health Metrics',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/Health',
+            metricName: 'HealthyControlPlaneInstances',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Average',
+            period: cdk.Duration.minutes(5)
+          }),
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/Health',
+            metricName: 'AutoRecoveryTriggered',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Sum',
+            period: cdk.Duration.hours(1)
+          })
+        ],
+        width: 8,
+        height: 6
+      })
+    );
+
+    // Row 6: Operation Durations
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Bootstrap Duration',
+        left: [
+          new cloudwatch.Metric({
+            namespace: `K8sCluster/${props.clusterName}`,
+            metricName: 'BootstrapDuration',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Average',
+            period: cdk.Duration.hours(1)
+          })
+        ],
+        width: 8,
+        height: 6
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'etcd Backup Size',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/EtcdBackup',
+            metricName: 'BackupSizeBytes',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Average',
+            period: cdk.Duration.hours(6)
+          })
+        ],
+        width: 8,
+        height: 6
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Durations (Custom)',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/EtcdLifecycle',
+            metricName: 'LifecycleHandlerDuration',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Average',
+            period: cdk.Duration.hours(1)
+          }),
+          new cloudwatch.Metric({
+            namespace: 'K8sCluster/EtcdBackup',
+            metricName: 'BackupDuration',
+            dimensionsMap: { ClusterName: props.clusterName },
+            statistic: 'Average',
+            period: cdk.Duration.hours(6)
+          })
+        ],
+        width: 8,
+        height: 6
+      })
+    );
+
+    // Row 7: DynamoDB
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: 'DynamoDB Read/Write Capacity',
