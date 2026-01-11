@@ -10,6 +10,13 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { Construct } from 'constructs';
+import {
+  createEtcdLifecycleLambdaCode,
+  createEtcdBackupLambdaCode,
+  createClusterHealthLambdaCode,
+  createWorkerBootstrapScript,
+  createControlPlaneBootstrapScript
+} from './scripts';
 
 export interface ComputeStackProps {
   readonly clusterName: string;
@@ -80,7 +87,7 @@ export class ComputeStack extends Construct {
 
     // Add control plane bootstrap script
     this.controlPlaneLaunchTemplate.userData?.addCommands(
-      this.createControlPlaneBootstrapScript(props.clusterName, props.oidcProviderArn, props.oidcBucketName, props.etcdBackupBucketName)
+      createControlPlaneBootstrapScript(props.clusterName, props.oidcProviderArn, props.oidcBucketName, props.etcdBackupBucketName, cdk.Stack.of(this))
     );
 
     // Set dedicated tenancy and fix IMDS configuration
@@ -116,7 +123,7 @@ export class ComputeStack extends Construct {
       functionName: `${props.clusterName}-etcd-lifecycle`,
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'index.handler',
-      code: lambda.Code.fromInline(this.createEtcdLifecycleLambdaCode(props.clusterName)),
+      code: lambda.Code.fromInline(createEtcdLifecycleLambdaCode(props.clusterName)),
       // 10 minute timeout for large nodes where etcd member removal may take longer:
       // - Data replication to remaining members
       // - Leader election if terminated node was leader
@@ -187,7 +194,7 @@ export class ComputeStack extends Construct {
       functionName: `${props.clusterName}-etcd-backup`,
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'index.handler',
-      code: lambda.Code.fromInline(this.createEtcdBackupLambdaCode(props.clusterName, props.etcdBackupBucketName)),
+      code: lambda.Code.fromInline(createEtcdBackupLambdaCode(props.clusterName, props.etcdBackupBucketName)),
       timeout: cdk.Duration.minutes(5),
       role: etcdBackupRole,
       environment: {
@@ -252,7 +259,7 @@ export class ComputeStack extends Construct {
       functionName: `${props.clusterName}-cluster-health`,
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'index.handler',
-      code: lambda.Code.fromInline(this.createClusterHealthLambdaCode(props.clusterName, props.etcdBackupBucketName)),
+      code: lambda.Code.fromInline(createClusterHealthLambdaCode(props.clusterName, props.etcdBackupBucketName)),
       timeout: cdk.Duration.minutes(2),
       role: clusterHealthRole,
       environment: {
@@ -334,7 +341,7 @@ export class ComputeStack extends Construct {
 
     // Add worker bootstrap script
     this.workerLaunchTemplate.userData?.addCommands(
-      this.createWorkerBootstrapScript(props.clusterName)
+      createWorkerBootstrapScript(props.clusterName, cdk.Stack.of(this))
     );
 
     // Worker AutoScaling Group
