@@ -80,7 +80,7 @@ Plans:
 **Plans**: 2
 
 Plans:
-- [ ] 16-01: Lambda critical path tests (3 tasks)
+- [x] 16-01: Lambda critical path tests (3 tasks) — completed 2026-01-11
 - [ ] 16-02: Bootstrap critical path tests and barrel file fix (3 tasks)
 
 ## Progress
@@ -91,4 +91,4 @@ See [MILESTONES.md](MILESTONES.md) for completed milestone history.
 |-------|-----------|-------|--------|-----------|
 | 14. Test Failures & Consistency Audit | v1.2 | 2/2 | Complete | 2026-01-11 |
 | 15. Code Consistency Cleanup | v1.2 | 1/1 | Complete | 2026-01-11 |
-| 16. Test Coverage Improvements | v1.2 | 0/2 | Planned | - |
+| 16. Test Coverage Improvements | v1.2 | 1/2 | In progress | - |

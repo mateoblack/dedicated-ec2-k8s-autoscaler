@@ -11,10 +11,10 @@ See: .planning/PROJECT.md (updated 2026-01-11)
 
 Phase: 16 of 16 (Test Coverage Improvements)
 Plan: 1 of 2 in current phase
-Status: Planning complete
-Last activity: 2026-01-11 — Created 16-01-PLAN.md and 16-02-PLAN.md
+Status: In progress
+Last activity: 2026-01-11 — Completed 16-01-PLAN.md
 
-Progress: █████░░░░░ 50%
+Progress: █████████░ 90%
 
 ## Milestones
 
@@ -65,5 +65,5 @@ None. (Test failures fixed in 14-01)
 ## Session Continuity
 
 Last session: 2026-01-11
-Stopped at: Created Phase 16 plans (16-01, 16-02)
-Resume file: .planning/phases/16-test-coverage-improvements/16-01-PLAN.md
+Stopped at: Completed 16-01-PLAN.md (Lambda critical path tests)
+Resume file: .planning/phases/16-test-coverage-improvements/16-02-PLAN.md
