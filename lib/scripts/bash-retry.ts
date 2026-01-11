@@ -187,5 +187,42 @@ retry_command_timeout() {
     fi
     return 1
 }
+
+# Retry helper that captures output with per-operation timeout (with jitter)
+# Usage: result=$(retry_command_output_timeout <timeout_seconds> <cmd> [args...])
+# Returns: 0 on success with output, 1 on failure after all retries
+retry_command_output_timeout() {
+    local timeout_seconds=$1
+    shift
+    local attempt=1
+    local delay=$RETRY_DELAY
+    local output=""
+
+    while [ $attempt -le $MAX_RETRIES ]; do
+        local exit_code=0
+        output=$(timeout $timeout_seconds "$@" 2>/dev/null) || exit_code=$?
+
+        if [ $exit_code -eq 0 ] && [ -n "$output" ]; then
+            echo "$output"
+            return 0
+        fi
+
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            # Calculate jitter: random value between 0 and delay * JITTER_FACTOR
+            local jitter_max=$(awk "BEGIN {printf \\"%d\\", $delay * $JITTER_FACTOR}")
+            local jitter=0
+            if [ "$jitter_max" -gt 0 ]; then
+                jitter=$((RANDOM % (jitter_max + 1)))
+            fi
+            local actual_delay=$((delay + jitter))
+            sleep $actual_delay
+            delay=$((delay * 2))
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
 `;
 }
