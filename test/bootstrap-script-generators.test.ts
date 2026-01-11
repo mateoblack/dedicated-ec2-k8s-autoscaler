@@ -148,6 +148,57 @@ describe('Bootstrap Script Generators', () => {
         expect(script).toContain('trace_id=$TRACE_ID');
       });
     });
+
+    describe('control plane discovery critical path', () => {
+      test('contains ASG instance listing with tag filter', () => {
+        expect(script).toContain('ec2 describe-instances');
+        expect(script).toContain(`${clusterName}-control-plane`);
+      });
+
+      test('contains instance state filtering for running instances', () => {
+        expect(script).toContain('instance-state-name,Values=running');
+      });
+
+      test('contains no healthy instance error handling', () => {
+        expect(script).toContain('No healthy control plane instance found');
+        expect(script).toContain('return 1');
+      });
+    });
+
+    describe('token retrieval with retry critical path', () => {
+      test('contains SSM send-command for token retrieval', () => {
+        expect(script).toContain('ssm send-command');
+        expect(script).toContain('AWS-RunShellScript');
+      });
+
+      test('contains token validation for placeholder values', () => {
+        expect(script).toContain('PENDING_INITIALIZATION');
+        expect(script).toContain('placeholder');
+      });
+
+      test('contains retry loop on join failure with fresh token', () => {
+        expect(script).toContain('request_new_token');
+        expect(script).toContain('Got fresh token, retrying join');
+      });
+    });
+
+    describe('kubeadm join execution critical path', () => {
+      test('contains kubeadm join command structure', () => {
+        expect(script).toContain('kubeadm join');
+        expect(script).toContain('$CLUSTER_ENDPOINT');
+        expect(script).toContain('--token');
+      });
+
+      test('contains discovery token CA cert hash parameter', () => {
+        expect(script).toContain('--discovery-token-ca-cert-hash');
+        expect(script).toContain('$CA_CERT_HASH');
+      });
+
+      test('contains join failure handling with kubeadm reset', () => {
+        expect(script).toContain('kubeadm reset -f');
+        expect(script).toContain('Join failed even with fresh token');
+      });
+    });
   });
 
   describe('createControlPlaneBootstrapScript', () => {
