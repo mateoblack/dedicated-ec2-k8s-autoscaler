@@ -92,7 +92,7 @@ retry_command() {
     return 1
 }
 
-# Retry helper that captures output
+# Retry helper that captures output (with jitter)
 # Usage: result=$(retry_command_output <cmd> [args...])
 retry_command_output() {
     local attempt=1
@@ -106,7 +106,15 @@ retry_command_output() {
         fi
 
         if [ $attempt -lt $MAX_RETRIES ]; then
-            sleep $delay
+            # Calculate jitter: random value between 0 and delay * JITTER_FACTOR
+            # Uses $RANDOM (0-32767) for randomization
+            local jitter_max=$(awk "BEGIN {printf \\"%d\\", $delay * $JITTER_FACTOR}")
+            local jitter=0
+            if [ "$jitter_max" -gt 0 ]; then
+                jitter=$((RANDOM % (jitter_max + 1)))
+            fi
+            local actual_delay=$((delay + jitter))
+            sleep $actual_delay
             delay=$((delay * 2))
         fi
 
