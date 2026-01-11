@@ -5,6 +5,7 @@
 
 import { getPythonRetryUtils } from './python-retry';
 import { getPythonLoggingSetup } from './python-logging';
+import { getPythonMetricsSetup } from './python-metrics';
 
 export function createEtcdBackupLambdaCode(clusterName: string, backupBucket: string): string {
   return `
@@ -14,6 +15,8 @@ import os
 import time
 
 \${getPythonLoggingSetup()}
+
+\${getPythonMetricsSetup()}
 
 ec2 = boto3.client('ec2')
 autoscaling = boto3.client('autoscaling')
@@ -40,6 +43,8 @@ def handler(event, context):
     """
     logger = setup_logging(context)
     cluster_name = os.environ['CLUSTER_NAME']
+    start_time = time.time() * 1000  # For duration tracking
+    metrics = create_metrics_logger('K8sCluster/EtcdBackup', context)
 
     try:
         logger.info("Starting scheduled etcd backup", extra={'cluster_name': cluster_name})
@@ -49,13 +54,20 @@ def handler(event, context):
 
         if not healthy_instances:
             logger.error("No healthy control plane instances found for backup")
+            try:
+                metrics.put_metric('BackupFailure', 1, COUNT)
+                duration_ms = time.time() * 1000 - start_time
+                metrics.put_metric('BackupDuration', duration_ms, MILLISECONDS)
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 500, 'body': 'No healthy instances'}
 
         target_instance = healthy_instances[0]
         logger.info("Using instance for backup", extra={'instance_id': target_instance})
 
         # Create backup with retries using shared utility
-        backup_key = retry_with_backoff(
+        backup_result = retry_with_backoff(
             lambda: create_etcd_backup(target_instance),
             "create etcd backup",
             max_retries=MAX_RETRIES,
@@ -63,14 +75,39 @@ def handler(event, context):
             retriable_exceptions=(BackupError,)
         )
 
-        if backup_key:
-            logger.info("Backup completed successfully", extra={'backup_key': backup_key})
+        if backup_result:
+            backup_key = backup_result.get('key') if isinstance(backup_result, dict) else backup_result
+            backup_size = backup_result.get('size') if isinstance(backup_result, dict) else None
+            logger.info("Backup completed successfully", extra={'backup_key': backup_key, 'backup_size': backup_size})
+            try:
+                metrics.put_metric('BackupSuccess', 1, COUNT)
+                duration_ms = time.time() * 1000 - start_time
+                metrics.put_metric('BackupDuration', duration_ms, MILLISECONDS)
+                if backup_size is not None:
+                    metrics.put_metric('BackupSizeBytes', backup_size, BYTES)
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 200, 'body': f'Backup created: {backup_key}'}
         else:
+            try:
+                metrics.put_metric('BackupFailure', 1, COUNT)
+                duration_ms = time.time() * 1000 - start_time
+                metrics.put_metric('BackupDuration', duration_ms, MILLISECONDS)
+                metrics.flush()
+            except Exception:
+                pass
             return {'statusCode': 500, 'body': 'Backup failed after all retries'}
 
     except Exception as e:
         logger.error("Backup failed", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
+        try:
+            metrics.put_metric('BackupFailure', 1, COUNT)
+            duration_ms = time.time() * 1000 - start_time
+            metrics.put_metric('BackupDuration', duration_ms, MILLISECONDS)
+            metrics.flush()
+        except Exception:
+            pass
         return {'statusCode': 500, 'body': f'Backup failed: {str(e)}'}
 
 
@@ -228,7 +265,16 @@ def wait_for_backup_command(command_id, instance_id, s3_key):
             logger.info("Backup command succeeded", extra={'command_id': command_id, 's3_key': s3_key})
             # Extract backup info from output
             if 'BACKUP_SUCCESS' in stdout:
-                return s3_key
+                # Parse backup size from output: "BACKUP_SUCCESS key=... size=12345 hash=..."
+                backup_size = None
+                try:
+                    import re
+                    size_match = re.search(r'size=(\d+)', stdout)
+                    if size_match:
+                        backup_size = int(size_match.group(1))
+                except Exception:
+                    pass
+                return {'key': s3_key, 'size': backup_size}
             raise BackupError("Backup command succeeded but no success marker found")
 
         elif status == 'InProgress' or status == 'Pending':
