@@ -438,5 +438,15 @@ describe('Bootstrap Script Generators', () => {
         expect(script).toContain('audit-log-maxsize');
       });
     });
+
+    describe('trace ID initialization', () => {
+      test('contains init_trace_id call', () => {
+        expect(script).toContain('init_trace_id');
+      });
+
+      test('includes trace_id in log messages', () => {
+        expect(script).toContain('trace_id=$TRACE_ID');
+      });
+    });
   });
 });

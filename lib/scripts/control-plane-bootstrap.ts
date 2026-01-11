@@ -181,12 +181,16 @@ if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
     exit 1
 fi
 
+# Initialize trace ID for operation correlation
+# If TRACE_ID is already set (from SSM command), use it; otherwise generate new
+init_trace_id
+
 # Get cluster configuration from SSM (with retries)
 KUBERNETES_VERSION=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/kubernetes/version' --query 'Parameter.Value' --output text --region $REGION)
 CLUSTER_ENDPOINT=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION || echo "")
 CLUSTER_INITIALIZED=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION || echo "false")
 
-log_info "Instance metadata retrieved" "instance_id=$INSTANCE_ID" "private_ip=$PRIVATE_IP" "cluster=${clusterName}" "node_type=control-plane"
+log_info "Instance metadata retrieved" "instance_id=\$INSTANCE_ID" "private_ip=\$PRIVATE_IP" "cluster=${clusterName}" "node_type=control-plane" "trace_id=\$TRACE_ID"
 log_info "Cluster configuration" "kubernetes_version=$KUBERNETES_VERSION" "cluster_initialized=$CLUSTER_INITIALIZED"
 
 # Configure containerd (already installed in AMI)
