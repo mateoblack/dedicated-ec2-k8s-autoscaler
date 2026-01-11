@@ -161,7 +161,8 @@ describe('Token Management', () => {
     });
 
     test('logs found control plane instance', () => {
-      expect(controlPlaneUserData).toContain('Found control plane instance:');
+      // With structured logging, uses log_info with instance_id parameter
+      expect(controlPlaneUserData).toContain('Found control plane instance');
     });
   });
 
@@ -207,7 +208,8 @@ describe('Token Management', () => {
     });
 
     test('logs SSM command ID', () => {
-      expect(controlPlaneUserData).toContain('SSM command sent:');
+      // With structured logging, uses log_info with command_id parameter
+      expect(controlPlaneUserData).toContain('SSM command sent');
     });
   });
 
@@ -392,7 +394,8 @@ describe('Token Management', () => {
     });
 
     test('logs token age', () => {
-      expect(controlPlaneUserData).toContain('token age:');
+      // With structured logging, uses log_info with age parameter
+      expect(controlPlaneUserData).toContain('Join token age');
     });
 
     test('requests refresh when token is old', () => {

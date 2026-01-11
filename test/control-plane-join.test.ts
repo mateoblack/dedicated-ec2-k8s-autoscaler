@@ -413,15 +413,18 @@ describe('Control Plane Join', () => {
 
   describe('Error Handling', () => {
     test('handles failed etcd registration gracefully', () => {
-      expect(controlPlaneUserData).toContain('WARNING: Failed to register etcd member');
+      // With structured logging, uses log_warn instead of echo "WARNING:"
+      expect(controlPlaneUserData).toContain('Failed to register etcd member');
     });
 
     test('handles missing target group ARN', () => {
-      expect(controlPlaneUserData).toContain('WARNING: Could not find target group ARN');
+      // With structured logging, uses log_warn instead of echo "WARNING:"
+      expect(controlPlaneUserData).toContain('Could not find target group ARN');
     });
 
     test('warns about token refresh failure', () => {
-      expect(controlPlaneUserData).toContain('WARNING: Token refresh failed');
+      // With structured logging, uses log_warn instead of echo "WARNING:"
+      expect(controlPlaneUserData).toContain('Token refresh failed');
     });
   });
 

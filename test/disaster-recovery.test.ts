@@ -86,7 +86,8 @@ describe('Disaster Recovery', () => {
     });
 
     test('logs backup key being restored', () => {
-      expect(controlPlaneUserData).toContain('Backup to restore:');
+      // With structured logging, backup key is logged as a context parameter
+      expect(controlPlaneUserData).toContain('backup=');
     });
   });
 
@@ -444,7 +445,8 @@ describe('Disaster Recovery', () => {
     });
 
     test('restore function logs the backup being restored', () => {
-      expect(controlPlaneUserData).toContain('Restoring cluster from backup:');
+      // With structured logging, uses log_info with backup_key parameter
+      expect(controlPlaneUserData).toContain('Restoring cluster from backup');
     });
 
     test('restore function returns 0 on success implied by structure', () => {

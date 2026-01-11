@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { getBashRetryFunctions } from './bash-retry';
+import { getBashLoggingFunctions } from './bash-logging';
 
 /**
  * Creates the control plane bootstrap script for Kubernetes cluster initialization and joining.
@@ -30,6 +31,7 @@ export function createControlPlaneBootstrapScript(
   const region = stack.region;
   return `
 # Control plane bootstrap script - Cluster initialization and joining
+# Note: Initial log uses echo since logging functions not yet defined
 echo "Starting control plane bootstrap for cluster: ${clusterName}"
 
 # Retry configuration
@@ -146,6 +148,8 @@ release_init_lock() {
 
 ${getBashRetryFunctions()}
 
+${getBashLoggingFunctions()}
+
 # Get instance metadata (with retries for IMDS)
 get_instance_metadata() {
     local path="$1"
@@ -163,7 +167,7 @@ REGION=${region}
 
 # Verify we got instance metadata
 if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
-    echo "ERROR: Failed to get instance metadata"
+    log_error "Failed to get instance metadata"
     exit 1
 fi
 
@@ -172,10 +176,8 @@ KUBERNETES_VERSION=$(retry_command_output aws ssm get-parameter --name '/${clust
 CLUSTER_ENDPOINT=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/endpoint' --query 'Parameter.Value' --output text --region $REGION || echo "")
 CLUSTER_INITIALIZED=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/initialized' --query 'Parameter.Value' --output text --region $REGION || echo "false")
 
-echo "Instance ID: $INSTANCE_ID"
-echo "Private IP: $PRIVATE_IP"
-echo "Kubernetes Version: $KUBERNETES_VERSION"
-echo "Cluster Initialized: $CLUSTER_INITIALIZED"
+log_info "Instance metadata retrieved" "instance_id=$INSTANCE_ID" "private_ip=$PRIVATE_IP" "cluster=${clusterName}" "node_type=control-plane"
+log_info "Cluster configuration" "kubernetes_version=$KUBERNETES_VERSION" "cluster_initialized=$CLUSTER_INITIALIZED"
 
 # Configure containerd (already installed in AMI)
 systemctl enable containerd
@@ -186,7 +188,7 @@ systemctl enable kubelet
 
 # Function to register etcd member in DynamoDB for lifecycle management
 register_etcd_member() {
-    echo "Registering etcd member in DynamoDB..."
+    log_info "Registering etcd member in DynamoDB"
 
     # Wait for etcd to be ready
     local max_attempts=30
@@ -198,16 +200,16 @@ register_etcd_member() {
             --cert=/etc/kubernetes/pki/etcd/server.crt \\
             --key=/etc/kubernetes/pki/etcd/server.key \\
             endpoint health &>/dev/null; then
-            echo "etcd is healthy"
+            log_info "etcd is healthy"
             break
         fi
-        echo "Waiting for etcd to be ready... (attempt $attempt/$max_attempts)"
+        log_info "Waiting for etcd to be ready" "attempt=$attempt" "max_attempts=$max_attempts"
         sleep 5
         attempt=$((attempt + 1))
     done
 
     if [ $attempt -gt $max_attempts ]; then
-        echo "ERROR: etcd did not become healthy in time"
+        log_error "etcd did not become healthy in time"
         return 1
     fi
 
@@ -222,7 +224,7 @@ register_etcd_member() {
         member list -w json 2>/dev/null)
 
     if [ -z "$member_info" ]; then
-        echo "ERROR: Failed to get etcd member list"
+        log_error "Failed to get etcd member list"
         return 1
     fi
 
@@ -259,11 +261,11 @@ except:
     fi
 
     if [ -z "$etcd_member_id" ]; then
-        echo "ERROR: Could not determine etcd member ID for this node"
+        log_error "Could not determine etcd member ID for this node"
         return 1
     fi
 
-    echo "Found etcd member ID: $etcd_member_id"
+    log_info "Found etcd member ID" "etcd_member_id=$etcd_member_id"
 
     # Register in DynamoDB
     aws dynamodb put-item \\
@@ -281,10 +283,10 @@ except:
         --region $REGION
 
     if [ $? -eq 0 ]; then
-        echo "Successfully registered etcd member $etcd_member_id in DynamoDB"
+        log_info "Successfully registered etcd member in DynamoDB" "etcd_member_id=$etcd_member_id"
         return 0
     else
-        echo "ERROR: Failed to register etcd member in DynamoDB"
+        log_error "Failed to register etcd member in DynamoDB"
         return 1
     fi
 }
@@ -292,20 +294,22 @@ except:
 # Function to restore etcd from backup
 restore_from_backup() {
     local backup_key="$1"
-    echo "Restoring cluster from backup: $backup_key"
+    log_info "Restoring cluster from backup" "backup_key=$backup_key"
 
     BOOTSTRAP_STAGE="restore-download"
+    log_info "Bootstrap stage transition" "stage=restore-download"
 
     # Download backup from S3
     local backup_file="/tmp/etcd-restore.db"
     if ! retry_command aws s3 cp s3://${etcdBackupBucketName}/\$backup_key \$backup_file --region $REGION; then
-        echo "ERROR: Failed to download backup from S3"
+        log_error "Failed to download backup from S3"
         return 1
     fi
 
-    echo "Backup downloaded successfully"
+    log_info "Backup downloaded successfully"
 
     BOOTSTRAP_STAGE="restore-etcd"
+    log_info "Bootstrap stage transition" "stage=restore-etcd"
 
     # Create data directory for restored etcd
     local restore_dir="/var/lib/etcd-restore"
@@ -322,11 +326,11 @@ restore_from_backup() {
         --initial-advertise-peer-urls=https://\$PRIVATE_IP:2380
 
     if [ \$? -ne 0 ]; then
-        echo "ERROR: etcd restore failed"
+        log_error "etcd restore failed"
         return 1
     fi
 
-    echo "etcd snapshot restored to \$restore_dir"
+    log_info "etcd snapshot restored" "restore_dir=\$restore_dir"
 
     # Move restored data to etcd data directory
     rm -rf /var/lib/etcd
@@ -339,6 +343,7 @@ restore_from_backup() {
     rm -f \$backup_file
 
     BOOTSTRAP_STAGE="restore-kubeadm"
+    log_info "Bootstrap stage transition" "stage=restore-kubeadm"
 
     # Initialize kubeadm with the restored etcd
     # Use kubeadm init phase to set up control plane components
@@ -435,11 +440,11 @@ KUBEADMEOF
         --upload-certs
 
     if [ \$? -ne 0 ]; then
-        echo "ERROR: kubeadm init after restore failed"
+        log_error "kubeadm init after restore failed"
         return 1
     fi
 
-    echo "Cluster restored successfully!"
+    log_info "Cluster restored successfully"
 
     # Configure kubectl
     mkdir -p /root/.kube
@@ -469,11 +474,11 @@ KUBEADMEOF
     if register_etcd_member; then
         ETCD_REGISTERED=true
     else
-        echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+        log_warn "Failed to register etcd member, lifecycle cleanup may not work"
     fi
 
     # Install CNI
-    echo "Installing Cilium CNI plugin..."
+    log_info "Installing Cilium CNI plugin"
     kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.14.5/install/kubernetes/quick-install.yaml
 
     return 0
@@ -484,8 +489,7 @@ RESTORE_MODE=$(retry_command_output aws ssm get-parameter --name '/${clusterName
 RESTORE_BACKUP=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/restore-backup' --query 'Parameter.Value' --output text --region $REGION || echo "")
 
 if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
-    echo "RESTORE MODE DETECTED - Attempting disaster recovery"
-    echo "Backup to restore: \$RESTORE_BACKUP"
+    log_info "RESTORE MODE DETECTED - Attempting disaster recovery" "backup=\$RESTORE_BACKUP"
 
     # WHY stale lock detection: A crashed restore leaves an orphan lock in DynamoDB.
     # Without cleanup, DR is blocked forever - no node can acquire the restore lock.
@@ -509,15 +513,15 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
             now_epoch=$(date +%s)
             lock_age=\$((now_epoch - lock_epoch))
 
-            echo "Found existing restore lock: held by \$lock_holder, created at \$lock_created (age: \${lock_age}s)"
+            log_info "Found existing restore lock" "lock_holder=\$lock_holder" "lock_created=\$lock_created" "lock_age_seconds=\$lock_age"
 
             if [ "\$lock_age" -gt "\$RESTORE_LOCK_TTL" ]; then
-                echo "Stale restore lock detected (>\${RESTORE_LOCK_TTL}s old) - removing stale lock from \$lock_holder"
+                log_warn "Stale restore lock detected - removing" "lock_holder=\$lock_holder" "lock_age_seconds=\$lock_age" "ttl_seconds=\$RESTORE_LOCK_TTL"
                 aws dynamodb delete-item \\
                     --table-name "${clusterName}-etcd-members" \\
                     --key '{"ClusterId":{"S":"'${clusterName}'"},"MemberId":{"S":"restore-lock"}}' \\
                     --region $REGION 2>/dev/null || true
-                echo "Stale lock removed, proceeding with restore attempt"
+                log_info "Stale lock removed, proceeding with restore attempt"
             fi
         fi
     fi
@@ -531,10 +535,10 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
         --condition-expression "attribute_not_exists(ClusterId)" \\
         --region $REGION 2>/dev/null; then
 
-        echo "Acquired restore lock, proceeding with restoration..."
+        log_info "Acquired restore lock, proceeding with restoration"
 
         if restore_from_backup "\$RESTORE_BACKUP"; then
-            echo "Disaster recovery completed successfully!"
+            log_info "Disaster recovery completed successfully"
 
             # Register with load balancer
             TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
@@ -552,10 +556,10 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
             BOOTSTRAP_STAGE="complete"
             trap - EXIT
 
-            echo "Control plane bootstrap (restore) completed successfully!"
+            log_info "Control plane bootstrap (restore) completed successfully"
             exit 0
         else
-            echo "Disaster recovery failed!"
+            log_error "Disaster recovery failed"
             # Release restore lock
             aws dynamodb delete-item \\
                 --table-name "${clusterName}-etcd-members" \\
@@ -564,16 +568,17 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
             exit 1
         fi
     else
-        echo "Another node is handling restoration, waiting for cluster to be ready..."
+        log_info "Another node is handling restoration, waiting for cluster to be ready"
         # Fall through to normal join logic
     fi
 fi
 
 # Check if this should be the first control plane node
 if [ "$CLUSTER_INITIALIZED" = "false" ]; then
-    echo "Attempting to initialize cluster as first control plane node..."
+    log_info "Attempting to initialize cluster as first control plane node"
 
     BOOTSTRAP_STAGE="acquiring-lock"
+    log_info "Bootstrap stage transition" "stage=acquiring-lock"
 
     # Try to acquire cluster initialization lock using DynamoDB
     # WHY DynamoDB lock: Multiple control planes may start simultaneously from ASG scaling.
@@ -590,7 +595,7 @@ if [ "$CLUSTER_INITIALIZED" = "false" ]; then
         # If bootstrap fails after acquiring lock, we must release it so another node can retry.
         CLUSTER_LOCK_HELD=true
         BOOTSTRAP_STAGE="kubeadm-init"
-        echo "Acquired initialization lock - initializing cluster..."
+        log_info "Acquired initialization lock - initializing cluster" "stage=kubeadm-init"
 
         # Set OIDC issuer URL for IRSA (before kubeadm init)
         OIDC_BUCKET="${oidcBucketName}"
@@ -682,7 +687,7 @@ rules:
       - group: "networking.k8s.io"
 AUDITPOLICY
 
-        echo "Created audit policy at /etc/kubernetes/audit-policy.yaml"
+        log_info "Created audit policy" "path=/etc/kubernetes/audit-policy.yaml"
 
         # Create kubeadm config file with audit logging enabled
         cat > /tmp/kubeadm-init-config.yaml << KUBEADMCONFIG
@@ -729,7 +734,7 @@ KUBEADMCONFIG
             --upload-certs
 
         if [ $? -eq 0 ]; then
-            echo "Cluster initialization successful!"
+            log_info "Cluster initialization successful"
 
             # Configure kubectl for root user
             mkdir -p /root/.kube
@@ -743,64 +748,66 @@ KUBEADMCONFIG
             # Store cluster information in SSM (with retries)
             # Critical SSM parameters - if these fail, we must release the lock and exit
             BOOTSTRAP_STAGE="ssm-params"
+            log_info "Bootstrap stage transition" "stage=ssm-params"
             SSM_FAILED=false
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION; then
-                echo "ERROR: Failed to store cluster endpoint in SSM"
+                log_error "Failed to store cluster endpoint in SSM"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value "\$JOIN_TOKEN" --type 'SecureString' --overwrite --region $REGION; then
-                echo "ERROR: Failed to store join token in SSM"
+                log_error "Failed to store join token in SSM"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION; then
-                echo "ERROR: Failed to store join token timestamp in SSM"
+                log_error "Failed to store join token timestamp in SSM"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value "sha256:\$CA_CERT_HASH" --type 'String' --overwrite --region $REGION; then
-                echo "ERROR: Failed to store CA cert hash in SSM"
+                log_error "Failed to store CA cert hash in SSM"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value "\$CERT_KEY" --type 'SecureString' --overwrite --region $REGION; then
-                echo "ERROR: Failed to store certificate key in SSM"
+                log_error "Failed to store certificate key in SSM"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION; then
-                echo "ERROR: Failed to store certificate key timestamp in SSM"
+                log_error "Failed to store certificate key timestamp in SSM"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION; then
-                echo "ERROR: Failed to store initialized flag in SSM"
+                log_error "Failed to store initialized flag in SSM"
                 SSM_FAILED=true
             fi
 
             # Check if any critical SSM parameter updates failed
             if [ "\$SSM_FAILED" = "true" ]; then
-                echo "CRITICAL: SSM parameter updates failed - releasing lock due to failure"
+                log_error "CRITICAL: SSM parameter updates failed - releasing lock due to failure"
                 release_init_lock
                 exit 1
             fi
 
             # Register this node's etcd member in DynamoDB for lifecycle management
             BOOTSTRAP_STAGE="etcd-registration"
+            log_info "Bootstrap stage transition" "stage=etcd-registration"
             if register_etcd_member; then
                 ETCD_REGISTERED=true
             else
-                echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+                log_warn "Failed to register etcd member, lifecycle cleanup may not work"
             fi
 
             # Install CNI plugin (Cilium)
-            echo "Installing Cilium CNI plugin..."
+            log_info "Installing Cilium CNI plugin"
             kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/v1.14.5/install/kubernetes/quick-install.yaml
 
             # Setup OIDC for IRSA (IAM Roles for Service Accounts)
-            echo "Setting up OIDC discovery for IRSA..."
+            log_info "Setting up OIDC discovery for IRSA"
             OIDC_PROVIDER_ARN="${oidcProviderArn}"
             # OIDC_BUCKET and OIDC_ISSUER were set before kubeadm init
 
@@ -809,7 +816,7 @@ KUBEADMCONFIG
             SA_SIGNING_KEY_FILE="/etc/kubernetes/pki/sa.pub"
 
             if [ -f "$SA_SIGNING_KEY_FILE" ]; then
-                echo "Generating OIDC discovery documents..."
+                log_info "Generating OIDC discovery documents"
 
                 # Create OIDC discovery document
                 cat > /tmp/openid-configuration.json <<OIDCEOF
@@ -836,8 +843,7 @@ OIDCEOF
                 # Python's codecs module is universally available on K8s nodes.
                 MODULUS_HEX=$(openssl rsa -pubin -in $SA_SIGNING_KEY_FILE -modulus -noout 2>&1)
                 if [ $? -ne 0 ] || [ -z "\$MODULUS_HEX" ]; then
-                    echo "ERROR: Failed to extract modulus from SA public key"
-                    echo "OpenSSL output: \$MODULUS_HEX"
+                    log_error "Failed to extract modulus from SA public key" "openssl_output=\$MODULUS_HEX"
                 fi
 
                 # Extract just the hex value after Modulus=
@@ -849,7 +855,7 @@ OIDCEOF
                     MODULUS=$(echo "\$MODULUS_HEX_CLEAN" | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
                 else
                     # xxd not available - use Python for hex to base64url conversion
-                    echo "xxd not found, using Python for modulus conversion"
+                    log_info "xxd not found, using Python for modulus conversion"
                     MODULUS=$(python3 -c "
 import base64
 import codecs
@@ -862,8 +868,7 @@ print(b64)
 
                 # Validate modulus is not empty
                 if [ -z "\$MODULUS" ]; then
-                    echo "ERROR: Modulus extraction failed - MODULUS is empty"
-                    echo "This will cause IRSA token validation to fail"
+                    log_error "Modulus extraction failed - MODULUS is empty, IRSA token validation will fail"
                 fi
 
                 # RSA public exponent is typically 65537 (AQAB in base64url)
@@ -890,12 +895,11 @@ JWKSEOF
 
                 # Validate JWK structure before upload
                 if ! python3 -c "import json; j=json.load(open('/tmp/keys.json')); assert 'keys' in j and len(j['keys']) > 0 and j['keys'][0].get('n')" 2>/dev/null; then
-                    echo "ERROR: Generated keys.json has invalid JWK structure"
-                    cat /tmp/keys.json
+                    log_error "Generated keys.json has invalid JWK structure"
                 fi
 
                 # Upload OIDC documents to S3 (with retries)
-                echo "Uploading OIDC discovery documents to S3..."
+                log_info "Uploading OIDC discovery documents to S3"
                 retry_command aws s3 cp /tmp/openid-configuration.json s3://\$OIDC_BUCKET/.well-known/openid-configuration --content-type application/json --region $REGION
                 retry_command aws s3 cp /tmp/keys.json s3://\$OIDC_BUCKET/keys.json --content-type application/json --region $REGION
 
@@ -912,22 +916,22 @@ JWKSEOF
                     S3_THUMBPRINT=\$ACTUAL_THUMBPRINT
                 fi
 
-                echo "S3 TLS Thumbprint: \$S3_THUMBPRINT"
+                log_info "S3 TLS thumbprint retrieved" "thumbprint=\$S3_THUMBPRINT"
 
                 # Update the AWS OIDC provider with the correct thumbprint (with retries)
-                echo "Updating AWS OIDC provider thumbprint..."
+                log_info "Updating AWS OIDC provider thumbprint"
                 retry_command aws iam update-open-id-connect-provider-thumbprint --open-id-connect-provider-arn \$OIDC_PROVIDER_ARN --thumbprint-list \$S3_THUMBPRINT --region $REGION
 
                 # Store OIDC issuer URL in SSM for reference (with retries)
                 retry_command aws ssm put-parameter --name '/${clusterName}/oidc/issuer' --value "\$OIDC_ISSUER" --type 'String' --overwrite --region $REGION
 
-                echo "OIDC setup completed successfully!"
+                log_info "OIDC setup completed successfully"
             else
-                echo "WARNING: Service account signing key not found. OIDC setup skipped."
+                log_warn "Service account signing key not found - OIDC setup skipped"
             fi
 
             # Install cluster-autoscaler with HA configuration
-            echo "Installing cluster-autoscaler..."
+            log_info "Installing cluster-autoscaler"
             cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
@@ -1002,7 +1006,7 @@ EOF
 
             # Install kubelet CSR auto-approver for server certificates
             # This is needed when serverTLSBootstrap is enabled on kubelets
-            echo "Installing kubelet CSR auto-approver..."
+            log_info "Installing kubelet CSR auto-approver"
             cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ServiceAccount
@@ -1111,22 +1115,23 @@ EOF
 
             # Register this instance with load balancer target group (with retries)
             BOOTSTRAP_STAGE="lb-registration"
+            log_info "Bootstrap stage transition" "stage=lb-registration"
             TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
             if [ -n "\$TARGET_GROUP_ARN" ]; then
                 if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                     LB_REGISTERED=true
                 fi
             else
-                echo "WARNING: Could not find target group ARN"
+                log_warn "Could not find target group ARN"
             fi
 
             # Release the init lock since we're done
             release_init_lock
             BOOTSTRAP_STAGE="complete"
 
-            echo "First control plane node setup completed successfully!"
+            log_info "First control plane node setup completed successfully"
         else
-            echo "Cluster initialization failed!"
+            log_error "Cluster initialization failed"
             # Release the lock
             aws dynamodb delete-item \\
                 --table-name "${clusterName}-bootstrap-lock" \\
@@ -1135,20 +1140,20 @@ EOF
             exit 1
         fi
     else
-        echo "Another node is initializing the cluster, waiting..."
+        log_info "Another node is initializing the cluster, waiting"
         # Wait for cluster to be initialized by another node
         for i in {1..30}; do
             sleep 10
             CLUSTER_INITIALIZED=$(aws ssm get-parameter --name "/${clusterName}/cluster/initialized" --query 'Parameter.Value' --output text --region $REGION 2>/dev/null || echo "false")
             if [ "$CLUSTER_INITIALIZED" = "true" ]; then
-                echo "Cluster has been initialized by another node"
+                log_info "Cluster has been initialized by another node"
                 break
             fi
-            echo "Waiting for cluster initialization... ($i/30)"
+            log_info "Waiting for cluster initialization" "attempt=$i" "max_attempts=30"
         done
 
         if [ "$CLUSTER_INITIALIZED" != "true" ]; then
-            echo "Timeout waiting for cluster initialization"
+            log_error "Timeout waiting for cluster initialization"
             exit 1
         fi
     fi
@@ -1156,7 +1161,7 @@ fi
 
 # Function to request a fresh join token from another control plane node
 request_new_control_plane_token() {
-    echo "Requesting new join token from existing control plane node..."
+    log_info "Requesting new join token from existing control plane node"
 
     # WHY token-refresh lock: Multiple joining nodes may detect expired token simultaneously.
     # Without coordination, they'd all call kubeadm token create, wasting resources and
@@ -1168,7 +1173,7 @@ request_new_control_plane_token() {
         --condition-expression "attribute_not_exists(LockName)" \
         --region $REGION 2>/dev/null; then
         lock_acquired=true
-        echo "Acquired token refresh lock"
+        log_info "Acquired token refresh lock"
     else
         # WHY check recent update: Another node may have just refreshed the token.
         # If token was updated in last 60s, our original "expired" check is stale - use new token.
@@ -1180,11 +1185,11 @@ request_new_control_plane_token() {
             local now_epoch=\$(date +%s)
             local age_seconds=\$((now_epoch - token_epoch))
             if [ \$age_seconds -lt 60 ]; then
-                echo "Token was recently updated (\${age_seconds}s ago), skip refresh"
+                log_info "Token was recently updated, skip refresh" "age_seconds=\$age_seconds"
                 return 0
             fi
         fi
-        echo "Could not acquire lock, another node may be refreshing"
+        log_info "Could not acquire lock, another node may be refreshing"
         return 1
     fi
 
@@ -1195,7 +1200,7 @@ request_new_control_plane_token() {
                 --table-name "${clusterName}-bootstrap-lock" \
                 --key '{"LockName":{"S":"token-refresh-lock"}}' \
                 --region $REGION 2>/dev/null || true
-            echo "Released token refresh lock"
+            log_info "Released token refresh lock"
         fi
     }
 
@@ -1207,12 +1212,12 @@ request_new_control_plane_token() {
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "\$CONTROL_PLANE_INSTANCE" ] || [ "\$CONTROL_PLANE_INSTANCE" = "None" ]; then
-        echo "ERROR: No other healthy control plane instance found"
+        log_error "No other healthy control plane instance found"
         release_token_refresh_lock
         return 1
     fi
 
-    echo "Found control plane instance: \$CONTROL_PLANE_INSTANCE"
+    log_info "Found control plane instance" "instance_id=\$CONTROL_PLANE_INSTANCE"
 
     # Create script to generate new token on control plane (with certificate-key for control plane join)
     # WHY separate token-gen lock on target node: The requesting node holds token-refresh-lock
@@ -1264,12 +1269,12 @@ aws dynamodb delete-item \
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "\$command_id" ] || [ "\$command_id" = "None" ]; then
-        echo "ERROR: Failed to send SSM command"
+        log_error "Failed to send SSM command"
         release_token_refresh_lock
         return 1
     fi
 
-    echo "SSM command sent: \$command_id"
+    log_info "SSM command sent" "command_id=\$command_id"
 
     # Wait for command completion
     local max_wait=90
@@ -1290,22 +1295,22 @@ aws dynamodb delete-item \
                 --query 'StandardOutputContent' --output text --region $REGION 2>/dev/null)
 
             if echo "\$output" | grep -q "TOKEN_REFRESH_SUCCESS"; then
-                echo "Token refresh successful"
+                log_info "Token refresh successful"
                 release_token_refresh_lock
                 return 0
             else
-                echo "Token refresh command did not succeed"
+                log_error "Token refresh command did not succeed"
                 release_token_refresh_lock
                 return 1
             fi
         elif [ "\$status" = "Failed" ] || [ "\$status" = "Cancelled" ] || [ "\$status" = "TimedOut" ]; then
-            echo "SSM command failed with status: \$status"
+            log_error "SSM command failed" "status=\$status"
             release_token_refresh_lock
             return 1
         fi
     done
 
-    echo "Timeout waiting for token refresh"
+    log_error "Timeout waiting for token refresh"
     release_token_refresh_lock
     return 1
 }
@@ -1365,7 +1370,7 @@ check_certificate_key_age() {
 
 # Function to check etcd cluster health via an existing control plane node
 check_etcd_health() {
-    echo "Checking etcd cluster health before joining..."
+    log_info "Checking etcd cluster health before joining"
 
     # Find a healthy control plane instance
     CONTROL_PLANE_INSTANCE=$(aws ec2 describe-instances \
@@ -1375,11 +1380,11 @@ check_etcd_health() {
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "\$CONTROL_PLANE_INSTANCE" ] || [ "\$CONTROL_PLANE_INSTANCE" = "None" ]; then
-        echo "WARNING: No control plane instance found to check etcd health"
+        log_warn "No control plane instance found to check etcd health"
         return 0  # Allow join attempt anyway
     fi
 
-    echo "Checking etcd via instance: \$CONTROL_PLANE_INSTANCE"
+    log_info "Checking etcd via instance" "instance_id=\$CONTROL_PLANE_INSTANCE"
 
     # Check etcd health via SSM
     local health_script='
@@ -1412,7 +1417,7 @@ fi
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "\$command_id" ] || [ "\$command_id" = "None" ]; then
-        echo "WARNING: Failed to send health check command"
+        log_warn "Failed to send health check command"
         return 0  # Allow join attempt anyway
     fi
 
@@ -1436,58 +1441,58 @@ fi
 
             if echo "\$output" | grep -q "ETCD_HEALTHY"; then
                 local member_count=$(echo "\$output" | grep "ETCD_HEALTHY" | sed 's/.*members=//')
-                echo "etcd cluster is healthy with \$member_count members"
+                log_info "etcd cluster is healthy" "member_count=\$member_count"
                 return 0
             elif echo "\$output" | grep -q "ETCD_NO_MEMBERS"; then
-                echo "WARNING: etcd cluster has no members - this is unexpected"
+                log_warn "etcd cluster has no members - this is unexpected"
                 return 1
             else
-                echo "WARNING: etcd cluster may be unhealthy"
+                log_warn "etcd cluster may be unhealthy"
                 return 1
             fi
         elif [ "\$status" = "Failed" ] || [ "\$status" = "Cancelled" ] || [ "\$status" = "TimedOut" ]; then
-            echo "WARNING: Health check command failed"
+            log_warn "Health check command failed"
             return 0  # Allow join attempt anyway
         fi
     done
 
-    echo "WARNING: Timeout waiting for health check"
+    log_warn "Timeout waiting for health check"
     return 0  # Allow join attempt anyway
 }
 
 # Join existing cluster as additional control plane node
 if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; then
-    echo "Joining existing cluster as additional control plane node..."
+    log_info "Joining existing cluster as additional control plane node"
 
     # Check etcd health before attempting to join
     ETCD_HEALTHY=true
     if ! check_etcd_health; then
-        echo "WARNING: etcd cluster may not be healthy. Waiting before join attempt..."
+        log_warn "etcd cluster may not be healthy - waiting before join attempt"
         # Wait and retry health check
         sleep 30
         if ! check_etcd_health; then
-            echo "ERROR: etcd cluster still unhealthy after waiting. Aborting join."
+            log_error "etcd cluster still unhealthy after waiting - aborting join"
             exit 1
         fi
     fi
 
     # Check token age and refresh if needed
     TOKEN_AGE=$(check_control_plane_token_age)
-    echo "Join token age: \$TOKEN_AGE hours"
+    log_info "Join token age" "age_hours=\$TOKEN_AGE"
 
     if [ "\$TOKEN_AGE" != "unknown" ] && [ "\$TOKEN_AGE" -ge 20 ]; then
-        echo "Token is \$TOKEN_AGE hours old (near expiry), requesting refresh..."
-        request_new_control_plane_token || echo "WARNING: Token refresh failed, will try existing token"
+        log_info "Token is near expiry, requesting refresh" "age_hours=\$TOKEN_AGE"
+        request_new_control_plane_token || log_warn "Token refresh failed, will try existing token"
     fi
 
     # Check certificate key age - kubeadm certs expire after 2 hours
     # Use 90 minute threshold (5400 seconds) to refresh before expiry
     CERT_KEY_AGE=$(check_certificate_key_age)
-    echo "Certificate key age: \$CERT_KEY_AGE minutes"
+    log_info "Certificate key age" "age_minutes=\$CERT_KEY_AGE"
 
     if [ "\$CERT_KEY_AGE" = "unknown" ] || [ "\$CERT_KEY_AGE" -ge 90 ]; then
-        echo "Certificate key is stale or expired (\$CERT_KEY_AGE minutes old), requesting refresh..."
-        request_new_control_plane_token || echo "WARNING: Certificate key refresh failed, will try existing key"
+        log_info "Certificate key is stale or expired, requesting refresh" "age_minutes=\$CERT_KEY_AGE"
+        request_new_control_plane_token || log_warn "Certificate key refresh failed, will try existing key"
     fi
 
     # Get join information from SSM (with retries)
@@ -1501,30 +1506,29 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
         local has_error=false
 
         if [ "\$CLUSTER_ENDPOINT" = "PENDING_INITIALIZATION" ] || [ "\$CLUSTER_ENDPOINT" = "placeholder" ]; then
-            echo "ERROR: Cluster endpoint not initialized."
+            log_error "Cluster endpoint not initialized"
             has_error=true
         fi
 
         if [ "\$CA_CERT_HASH" = "PENDING_INITIALIZATION" ] || [ "\$CA_CERT_HASH" = "placeholder" ]; then
-            echo "ERROR: CA certificate hash not initialized."
+            log_error "CA certificate hash not initialized"
             has_error=true
         fi
 
         if [ "\$JOIN_TOKEN" = "PENDING_INITIALIZATION" ] || [ "\$JOIN_TOKEN" = "placeholder" ]; then
-            echo "ERROR: Join token not initialized."
+            log_error "Join token not initialized"
             has_error=true
         fi
 
         if [ "\$has_error" = "true" ]; then
-            echo "ERROR: SSM parameters contain uninitialized values."
-            echo "The first control plane node may not have completed initialization."
+            log_error "SSM parameters contain uninitialized values - first control plane may not have completed initialization"
             return 1
         fi
         return 0
     }
 
     if ! validate_join_params; then
-        echo "Cannot join cluster - SSM parameters not ready. Exiting."
+        log_error "Cannot join cluster - SSM parameters not ready"
         exit 1
     fi
 
@@ -1552,10 +1556,11 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
 
     if [ -n "\$JOIN_TOKEN" ] && [ -n "\$CA_CERT_HASH" ] && [ -n "\$CLUSTER_ENDPOINT" ]; then
         BOOTSTRAP_STAGE="kubeadm-join"
+        log_info "Bootstrap stage transition" "stage=kubeadm-join"
 
         # First attempt
         if attempt_control_plane_join "\$JOIN_TOKEN" "\$CERT_KEY"; then
-            echo "Successfully joined cluster as control plane node"
+            log_info "Successfully joined cluster as control plane node"
 
             # Configure kubectl for root user
             mkdir -p /root/.kube
@@ -1567,55 +1572,61 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
             # before DynamoDB write confirms would cause cleanup to attempt deregister on
             # a member that was never registered (race condition fixed in phase 04-01).
             BOOTSTRAP_STAGE="etcd-registration"
+            log_info "Bootstrap stage transition" "stage=etcd-registration"
             if register_etcd_member; then
                 ETCD_REGISTERED=true
             else
-                echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+                log_warn "Failed to register etcd member, lifecycle cleanup may not work"
             fi
 
             # Register this instance with load balancer target group (with retries)
             BOOTSTRAP_STAGE="lb-registration"
+            log_info "Bootstrap stage transition" "stage=lb-registration"
             TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
             if [ -n "\$TARGET_GROUP_ARN" ]; then
                 if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
                     LB_REGISTERED=true
                 fi
             else
-                echo "WARNING: Could not find target group ARN"
+                log_warn "Could not find target group ARN"
             fi
 
             BOOTSTRAP_STAGE="complete"
         else
-            echo "First join attempt failed, requesting fresh token..."
+            log_info "First join attempt failed, requesting fresh token"
 
             # Try to get a fresh token
             BOOTSTRAP_STAGE="token-refresh"
+            log_info "Bootstrap stage transition" "stage=token-refresh"
             if request_new_control_plane_token; then
                 # Get the new token
                 NEW_JOIN_TOKEN=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION)
                 NEW_CERT_KEY=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/certificate-key' --with-decryption --query 'Parameter.Value' --output text --region $REGION || echo "")
 
                 if [ -n "\$NEW_JOIN_TOKEN" ]; then
-                    echo "Got fresh token, retrying join..."
+                    log_info "Got fresh token, retrying join"
                     # Reset kubeadm state before retry
                     kubeadm reset -f 2>/dev/null || true
 
                     BOOTSTRAP_STAGE="kubeadm-join-retry"
+                    log_info "Bootstrap stage transition" "stage=kubeadm-join-retry"
                     if attempt_control_plane_join "\$NEW_JOIN_TOKEN" "\$NEW_CERT_KEY"; then
-                        echo "Successfully joined cluster with fresh token"
+                        log_info "Successfully joined cluster with fresh token"
 
                         mkdir -p /root/.kube
                         cp -i /etc/kubernetes/admin.conf /root/.kube/config
                         chown root:root /root/.kube/config
 
                         BOOTSTRAP_STAGE="etcd-registration"
+                        log_info "Bootstrap stage transition" "stage=etcd-registration"
                         if register_etcd_member; then
                             ETCD_REGISTERED=true
                         else
-                            echo "WARNING: Failed to register etcd member"
+                            log_warn "Failed to register etcd member"
                         fi
 
                         BOOTSTRAP_STAGE="lb-registration"
+                        log_info "Bootstrap stage transition" "stage=lb-registration"
                         TARGET_GROUP_ARN=$(retry_command_output aws elbv2 describe-target-groups --names '${clusterName}-control-plane-tg' --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION)
                         if [ -n "\$TARGET_GROUP_ARN" ]; then
                             if retry_command aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=\$INSTANCE_ID,Port=6443 --region $REGION; then
@@ -1625,26 +1636,26 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
 
                         BOOTSTRAP_STAGE="complete"
                     else
-                        echo "Join failed even with fresh token"
+                        log_error "Join failed even with fresh token"
                         exit 1
                     fi
                 else
-                    echo "Could not get a new token"
+                    log_error "Could not get a new token"
                     exit 1
                 fi
             else
-                echo "Token refresh failed"
+                log_error "Token refresh failed"
                 exit 1
             fi
         fi
     else
-        echo "Missing join information in SSM parameters"
+        log_error "Missing join information in SSM parameters"
         exit 1
     fi
 fi
 
 # Setup automatic certificate rotation for control plane
-echo "Setting up automatic certificate rotation..."
+log_info "Setting up automatic certificate rotation"
 
 # Create certificate renewal script
 cat > /usr/local/bin/k8s-cert-renewal.sh << 'CERTSCRIPT'
@@ -1783,12 +1794,12 @@ systemctl daemon-reload
 systemctl enable k8s-cert-renewal.timer
 systemctl start k8s-cert-renewal.timer
 
-echo "Certificate renewal timer configured"
+log_info "Certificate renewal timer configured"
 
 # Disable cleanup trap on successful completion
 trap - EXIT
 BOOTSTRAP_STAGE="complete"
 
-echo "Control plane bootstrap completed successfully!"
+log_info "Control plane bootstrap completed successfully"
 `;
 }

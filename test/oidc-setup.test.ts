@@ -259,7 +259,8 @@ describe('OIDC Setup', () => {
     });
 
     test('logs thumbprint value', () => {
-      expect(controlPlaneUserData).toContain('S3 TLS Thumbprint:');
+      // With structured logging, uses log_info with thumbprint parameter
+      expect(controlPlaneUserData).toContain('S3 TLS thumbprint retrieved');
     });
   });
 
