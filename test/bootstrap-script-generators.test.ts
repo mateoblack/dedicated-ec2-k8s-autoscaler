@@ -458,5 +458,75 @@ describe('Bootstrap Script Generators', () => {
         expect(script).toContain('trace_id=$TRACE_ID');
       });
     });
+
+    describe('DynamoDB lock acquisition critical path', () => {
+      test('contains acquire_cluster_init_lock pattern with conditional put', () => {
+        // Lock acquisition uses atomic DynamoDB conditional write
+        expect(script).toContain('dynamodb put-item');
+        expect(script).toContain('condition-expression');
+      });
+
+      test('contains stale lock detection with TTL-based cleanup', () => {
+        // Stale locks (crashed processes) must be detected and cleaned up
+        expect(script).toContain('lock_age');
+        expect(script).toContain('RESTORE_LOCK_TTL');
+      });
+
+      test('contains lock cleanup on failure via cleanup_on_failure', () => {
+        // Lock must be released if bootstrap fails
+        expect(script).toContain('CLUSTER_LOCK_HELD');
+        expect(script).toContain('dynamodb delete-item');
+      });
+
+      test('tracks lock ownership state for cleanup decisions', () => {
+        // cleanup_on_failure only releases lock if we held it
+        expect(script).toContain('CLUSTER_LOCK_HELD=true');
+        expect(script).toContain('CLUSTER_LOCK_HELD=false');
+      });
+    });
+
+    describe('token refresh mechanism critical path', () => {
+      test('contains request_new_control_plane_token function', () => {
+        expect(script).toContain('request_new_control_plane_token()');
+      });
+
+      test('contains token age checking with 20-hour threshold', () => {
+        // Tokens expire at 24h, proactive refresh at 20h
+        expect(script).toContain('check_control_plane_token_age');
+        expect(script).toContain('20');
+      });
+
+      test('contains kubeadm token create command for refresh', () => {
+        expect(script).toContain('kubeadm token create');
+        expect(script).toContain('--ttl 24h');
+      });
+
+      test('contains SSM parameter update for new token', () => {
+        expect(script).toContain('ssm put-parameter');
+        expect(script).toContain('join-token');
+        expect(script).toContain('TOKEN_REFRESH_SUCCESS');
+      });
+    });
+
+    describe('disaster recovery flow critical path', () => {
+      test('contains restore_from_backup function', () => {
+        expect(script).toContain('restore_from_backup()');
+      });
+
+      test('contains S3 backup download command', () => {
+        expect(script).toContain('aws s3 cp');
+        expect(script).toContain(etcdBackupBucketName);
+      });
+
+      test('contains etcdctl snapshot restore command', () => {
+        expect(script).toContain('etcdctl snapshot restore');
+        expect(script).toContain('--data-dir=');
+      });
+
+      test('contains restore mode parameter check and clear', () => {
+        expect(script).toContain('RESTORE_MODE');
+        expect(script).toContain("restore-mode' --value 'false'");
+      });
+    });
   });
 });
