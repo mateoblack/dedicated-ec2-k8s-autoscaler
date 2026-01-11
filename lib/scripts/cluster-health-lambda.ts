@@ -3,16 +3,15 @@
  * Monitors cluster health and triggers auto-recovery when needed.
  */
 
+import { getPythonLoggingSetup } from './python-logging';
+
 export function createClusterHealthLambdaCode(clusterName: string, backupBucket: string): string {
   return `
 import json
 import boto3
 import os
-import logging
-from datetime import datetime
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+\${getPythonLoggingSetup()}
 
 ec2 = boto3.client('ec2')
 autoscaling = boto3.client('autoscaling')
@@ -29,16 +28,17 @@ def handler(event, context):
 
     This enables automatic disaster recovery when all control plane nodes fail.
     """
+    logger = setup_logging(context)
     cluster_name = os.environ['CLUSTER_NAME']
     region = os.environ['REGION']
     threshold = int(os.environ.get('UNHEALTHY_THRESHOLD', '3'))
 
     try:
-        logger.info(f"Running health check for cluster {cluster_name}")
+        logger.info("Running health check", extra={'cluster_name': cluster_name, 'component': 'health-check'})
 
         # Check for healthy control plane instances
         healthy_count = get_healthy_instance_count()
-        logger.info(f"Healthy control plane instances: {healthy_count}")
+        logger.info("Healthy control plane instances count", extra={'healthy_count': healthy_count, 'component': 'control-plane'})
 
         # Get current failure count from SSM
         failure_count = get_failure_count(cluster_name, region)
@@ -46,21 +46,21 @@ def handler(event, context):
         if healthy_count == 0:
             # No healthy instances - increment failure counter
             failure_count += 1
-            logger.warning(f"No healthy instances! Failure count: {failure_count}/{threshold}")
+            logger.warning("No healthy instances", extra={'failure_count': failure_count, 'threshold': threshold, 'status': 'unhealthy'})
 
             if failure_count >= threshold:
                 # Check if we have a backup to restore from
                 latest_backup = get_latest_backup()
                 if latest_backup:
-                    logger.error(f"TRIGGERING AUTO-RECOVERY - {failure_count} consecutive failures")
-                    logger.info(f"Latest backup available: {latest_backup}")
+                    logger.error("TRIGGERING AUTO-RECOVERY", extra={'failure_count': failure_count, 'backup_key': latest_backup})
+                    logger.info("Latest backup available", extra={'backup_key': latest_backup})
                     trigger_restore_mode(cluster_name, region, latest_backup)
                     return {
                         'statusCode': 200,
                         'body': f'Restore mode triggered, backup: {latest_backup}'
                     }
                 else:
-                    logger.error("No backup available for restore!")
+                    logger.error("No backup available for restore", extra={'status': 'critical'})
                     set_failure_count(cluster_name, region, failure_count)
                     return {
                         'statusCode': 500,
@@ -75,7 +75,7 @@ def handler(event, context):
         else:
             # Cluster is healthy
             if failure_count > 0:
-                logger.info("Cluster recovered, resetting failure count")
+                logger.info("Cluster recovered, resetting failure count", extra={'status': 'recovered'})
                 set_failure_count(cluster_name, region, 0)
 
                 # Clear restore mode if it was set
@@ -87,7 +87,7 @@ def handler(event, context):
             }
 
     except Exception as e:
-        logger.error(f"Health check error: {str(e)}", exc_info=True)
+        logger.error("Health check error", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
         return {'statusCode': 500, 'body': f'Error: {str(e)}'}
 
 
@@ -126,7 +126,7 @@ def get_healthy_instance_count():
         return running_count
 
     except Exception as e:
-        logger.error(f"Error getting instance count: {str(e)}")
+        logger.error("Error getting instance count", extra={'error': str(e)})
         return 0
 
 
@@ -140,7 +140,7 @@ def get_failure_count(cluster_name, region):
     except ssm.exceptions.ParameterNotFound:
         return 0
     except Exception as e:
-        logger.error(f"Error getting failure count: {str(e)}")
+        logger.error("Error getting failure count", extra={'error': str(e), 'cluster_name': cluster_name})
         return 0
 
 
@@ -154,7 +154,7 @@ def set_failure_count(cluster_name, region, count):
             Overwrite=True
         )
     except Exception as e:
-        logger.error(f"Error setting failure count: {str(e)}")
+        logger.error("Error setting failure count", extra={'error': str(e), 'cluster_name': cluster_name, 'count': count})
 
 
 def get_latest_backup():
@@ -181,11 +181,11 @@ def get_latest_backup():
 
         # Return the most recent backup
         latest = objects[0]['Key']
-        logger.info(f"Latest backup: {latest}, modified: {objects[0]['LastModified']}")
+        logger.info("Found latest backup", extra={'backup_key': latest, 'modified': str(objects[0]['LastModified'])})
         return latest
 
     except Exception as e:
-        logger.error(f"Error listing backups: {str(e)}")
+        logger.error("Error listing backups", extra={'error': str(e), 'bucket': bucket})
         return None
 
 
@@ -222,10 +222,10 @@ def trigger_restore_mode(cluster_name, region, backup_key):
             Overwrite=True
         )
 
-        logger.info(f"Restore mode triggered with backup: {backup_key}")
+        logger.info("Restore mode triggered", extra={'backup_key': backup_key, 'cluster_name': cluster_name})
 
     except Exception as e:
-        logger.error(f"Error triggering restore mode: {str(e)}")
+        logger.error("Error triggering restore mode", extra={'error': str(e), 'backup_key': backup_key})
         raise
 
 
@@ -251,9 +251,9 @@ def clear_restore_mode(cluster_name, region):
         # Reset failure count
         set_failure_count(cluster_name, region, 0)
 
-        logger.info("Restore mode cleared - cluster recovered")
+        logger.info("Restore mode cleared - cluster recovered", extra={'cluster_name': cluster_name, 'status': 'recovered'})
 
     except Exception as e:
-        logger.error(f"Error clearing restore mode: {str(e)}")
+        logger.error("Error clearing restore mode", extra={'error': str(e), 'cluster_name': cluster_name})
 `;
 }

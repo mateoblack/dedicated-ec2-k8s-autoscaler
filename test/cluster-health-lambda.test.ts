@@ -353,8 +353,9 @@ describe('Cluster Health Lambda', () => {
 
     test('Lambda logs failure count progression', () => {
       const code = getLambdaCode('cluster-health');
-      expect(code).toContain('No healthy instances! Failure count:');
-      expect(code).toContain('/{threshold}');
+      expect(code).toContain('No healthy instances');
+      expect(code).toContain("'failure_count': failure_count");
+      expect(code).toContain("'threshold': threshold");
     });
   });
 
