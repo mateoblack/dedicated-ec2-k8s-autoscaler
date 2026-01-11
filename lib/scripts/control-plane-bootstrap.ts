@@ -177,7 +177,7 @@ REGION=${region}
 
 # Verify we got instance metadata
 if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
-    log_error "Failed to get instance metadata"
+    log_error "Failed to get instance metadata" "check=Verify IMDS is accessible at 169.254.169.254" "common_causes=IMDSv2 not configured correctly, instance IAM role missing, IMDS endpoint blocked by firewall"
     exit 1
 fi
 
@@ -219,7 +219,7 @@ register_etcd_member() {
     done
 
     if [ $attempt -gt $max_attempts ]; then
-        log_error "etcd did not become healthy in time"
+        log_error "etcd did not become healthy in time" "check=Check etcd logs: journalctl -u etcd" "common_causes=Certificates missing in /etc/kubernetes/pki/etcd/, port 2379 not accessible, etcd data directory corrupted"
         return 1
     fi
 
@@ -234,7 +234,7 @@ register_etcd_member() {
         member list -w json 2>/dev/null)
 
     if [ -z "$member_info" ]; then
-        log_error "Failed to get etcd member list"
+        log_error "Failed to get etcd member list" "check=Verify etcd endpoint health with etcdctl endpoint health" "common_causes=etcd not running, certificate permissions incorrect, etcd endpoint unreachable"
         return 1
     fi
 
@@ -271,7 +271,7 @@ except:
     fi
 
     if [ -z "$etcd_member_id" ]; then
-        log_error "Could not determine etcd member ID for this node"
+        log_error "Could not determine etcd member ID for this node" "check=Run etcdctl member list to verify member registration" "common_causes=etcd member not fully registered yet, member name/IP mismatch in etcd output"
         return 1
     fi
 
@@ -296,7 +296,7 @@ except:
         log_info "Successfully registered etcd member in DynamoDB" "etcd_member_id=$etcd_member_id"
         return 0
     else
-        log_error "Failed to register etcd member in DynamoDB"
+        log_error "Failed to register etcd member in DynamoDB" "check=Verify IAM role has dynamodb:PutItem permission" "common_causes=IAM role missing DynamoDB permissions, DynamoDB table ${clusterName}-etcd-members does not exist, network connectivity issue"
         return 1
     fi
 }
@@ -312,7 +312,7 @@ restore_from_backup() {
     # Download backup from S3
     local backup_file="/tmp/etcd-restore.db"
     if ! retry_command aws s3 cp s3://${etcdBackupBucketName}/\$backup_key \$backup_file --region $REGION; then
-        log_error "Failed to download backup from S3"
+        log_error "Failed to download backup from S3" "check=Verify backup exists at s3://${etcdBackupBucketName}/\$backup_key" "common_causes=IAM role missing S3 GetObject permission, backup file does not exist, S3 bucket policy restricting access"
         return 1
     fi
 
@@ -336,7 +336,7 @@ restore_from_backup() {
         --initial-advertise-peer-urls=https://\$PRIVATE_IP:2380
 
     if [ \$? -ne 0 ]; then
-        log_error "etcd restore failed"
+        log_error "etcd restore failed" "check=Verify etcd data directory permissions and backup file integrity" "common_causes=Backup file corrupted or truncated, insufficient disk space, /var/lib/etcd directory permissions incorrect"
         return 1
     fi
 
@@ -450,7 +450,7 @@ KUBEADMEOF
         --upload-certs
 
     if [ \$? -ne 0 ]; then
-        log_error "kubeadm init after restore failed"
+        log_error "kubeadm init after restore failed" "check=Review kubeadm and kubelet logs: journalctl -xeu kubelet" "common_causes=Port 6443 already in use, certificate errors, restored etcd data incompatible with kubeadm version"
         return 1
     fi
 
@@ -569,7 +569,7 @@ if [ "\$RESTORE_MODE" = "true" ] && [ -n "\$RESTORE_BACKUP" ]; then
             log_info "Control plane bootstrap (restore) completed successfully"
             exit 0
         else
-            log_error "Disaster recovery failed"
+            log_error "Disaster recovery failed" "check=Review restore_from_backup errors above" "common_causes=Backup download failed, etcd restore failed, kubeadm init failed after restore"
             # Release restore lock
             aws dynamodb delete-item \\
                 --table-name "${clusterName}-etcd-members" \\
@@ -762,37 +762,37 @@ KUBEADMCONFIG
             SSM_FAILED=false
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/endpoint' --value '${clusterName}-cp-lb.internal:6443' --type 'String' --overwrite --region $REGION; then
-                log_error "Failed to store cluster endpoint in SSM"
+                log_error "Failed to store cluster endpoint in SSM" "check=Verify IAM role has ssm:PutParameter permission" "common_causes=IAM role missing SSM permissions, SSM parameter path not allowed by IAM policy"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token' --value "\$JOIN_TOKEN" --type 'SecureString' --overwrite --region $REGION; then
-                log_error "Failed to store join token in SSM"
+                log_error "Failed to store join token in SSM" "check=Verify IAM role has ssm:PutParameter permission for SecureString" "common_causes=IAM role missing SSM permissions, KMS key access denied for SecureString encryption"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/join-token-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION; then
-                log_error "Failed to store join token timestamp in SSM"
+                log_error "Failed to store join token timestamp in SSM" "check=Verify IAM role has ssm:PutParameter permission" "common_causes=IAM role missing SSM permissions, SSM parameter path not allowed by IAM policy"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/ca-cert-hash' --value "sha256:\$CA_CERT_HASH" --type 'String' --overwrite --region $REGION; then
-                log_error "Failed to store CA cert hash in SSM"
+                log_error "Failed to store CA cert hash in SSM" "check=Verify IAM role has ssm:PutParameter permission" "common_causes=IAM role missing SSM permissions, SSM parameter path not allowed by IAM policy"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key' --value "\$CERT_KEY" --type 'SecureString' --overwrite --region $REGION; then
-                log_error "Failed to store certificate key in SSM"
+                log_error "Failed to store certificate key in SSM" "check=Verify IAM role has ssm:PutParameter permission for SecureString" "common_causes=IAM role missing SSM permissions, KMS key access denied for SecureString encryption"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/certificate-key-updated' --value "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --type 'String' --overwrite --region $REGION; then
-                log_error "Failed to store certificate key timestamp in SSM"
+                log_error "Failed to store certificate key timestamp in SSM" "check=Verify IAM role has ssm:PutParameter permission" "common_causes=IAM role missing SSM permissions, SSM parameter path not allowed by IAM policy"
                 SSM_FAILED=true
             fi
 
             if ! retry_command aws ssm put-parameter --name '/${clusterName}/cluster/initialized' --value 'true' --type 'String' --overwrite --region $REGION; then
-                log_error "Failed to store initialized flag in SSM"
+                log_error "Failed to store initialized flag in SSM" "check=Verify IAM role has ssm:PutParameter permission" "common_causes=IAM role missing SSM permissions, SSM parameter path not allowed by IAM policy"
                 SSM_FAILED=true
             fi
 
@@ -854,7 +854,7 @@ OIDCEOF
                 # Python's codecs module is universally available on K8s nodes.
                 MODULUS_HEX=$(openssl rsa -pubin -in $SA_SIGNING_KEY_FILE -modulus -noout 2>&1)
                 if [ $? -ne 0 ] || [ -z "\$MODULUS_HEX" ]; then
-                    log_error "Failed to extract modulus from SA public key" "openssl_output=\$MODULUS_HEX"
+                    log_error "Modulus extraction failed" "check=Verify SA key file exists and has correct permissions" "common_causes=SA key file not generated by kubeadm, file permissions preventing read access, OpenSSL version incompatibility"
                 fi
 
                 # Extract just the hex value after Modulus=
@@ -879,7 +879,7 @@ print(b64)
 
                 # Validate modulus is not empty
                 if [ -z "\$MODULUS" ]; then
-                    log_error "Modulus extraction failed - MODULUS is empty, IRSA token validation will fail"
+                    log_error "Modulus is empty after conversion" "check=Verify OpenSSL and base64 commands succeeded" "common_causes=SA key file corrupted, hex to base64 conversion failed, missing xxd or Python codecs module"
                 fi
 
                 # RSA public exponent is typically 65537 (AQAB in base64url)
@@ -906,7 +906,7 @@ JWKSEOF
 
                 # Validate JWK structure before upload
                 if ! python3 -c "import json; j=json.load(open('/tmp/keys.json')); assert 'keys' in j and len(j['keys']) > 0 and j['keys'][0].get('n')" 2>/dev/null; then
-                    log_error "Generated keys.json has invalid JWK structure"
+                    log_error "Generated keys.json has invalid JWK structure" "check=Verify /tmp/keys.json contents and modulus extraction" "common_causes=Modulus extraction failed, jq not available, Python JSON parsing error"
                 fi
 
                 # Upload OIDC documents to S3 (with retries)
@@ -1149,7 +1149,7 @@ EOF
 
             log_info "First control plane node setup completed successfully"
         else
-            log_error "Cluster initialization failed"
+            log_error "Cluster initialization failed" "check=Review kubeadm init output above and kubelet logs: journalctl -xeu kubelet" "common_causes=Port 6443 already in use, certificate generation errors, container runtime not running"
             # Release the lock
             aws dynamodb delete-item \\
                 --table-name "${clusterName}-bootstrap-lock" \\
@@ -1171,7 +1171,7 @@ EOF
         done
 
         if [ "$CLUSTER_INITIALIZED" != "true" ]; then
-            log_error "Timeout waiting for cluster initialization"
+            log_error "Timeout waiting for cluster initialization" "check=Check first control plane instance logs at /var/log/cloud-init-output.log" "common_causes=First control plane bootstrap failed, DynamoDB lock stuck, SSM parameter update failed"
             exit 1
         fi
     fi
@@ -1230,7 +1230,7 @@ request_new_control_plane_token() {
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "\$CONTROL_PLANE_INSTANCE" ] || [ "\$CONTROL_PLANE_INSTANCE" = "None" ]; then
-        log_error "No other healthy control plane instance found"
+        log_error "No healthy control plane instance found" "check=Verify control plane ASG has running instances" "common_causes=All control plane instances unhealthy, ASG scaling down, instance filter mismatch"
         release_token_refresh_lock
         return 1
     fi
@@ -1287,7 +1287,7 @@ aws dynamodb delete-item \
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "\$command_id" ] || [ "\$command_id" = "None" ]; then
-        log_error "Failed to send SSM command"
+        log_error "Failed to send SSM command" "check=Verify SSM agent is running on target instance" "common_causes=IAM role missing ssm:SendCommand permission, target instance SSM agent offline, instance not registered with SSM"
         release_token_refresh_lock
         return 1
     fi
@@ -1317,18 +1317,18 @@ aws dynamodb delete-item \
                 release_token_refresh_lock
                 return 0
             else
-                log_error "Token refresh command did not succeed"
+                log_error "Token refresh command did not succeed" "check=Review SSM command output in AWS console" "common_causes=kubeadm token create failed on control plane, control plane API server unhealthy, kubeconfig missing"
                 release_token_refresh_lock
                 return 1
             fi
         elif [ "\$status" = "Failed" ] || [ "\$status" = "Cancelled" ] || [ "\$status" = "TimedOut" ]; then
-            log_error "SSM command failed" "status=\$status"
+            log_error "SSM command failed" "status=\$status" "check=Review SSM Run Command history in AWS console" "common_causes=Script execution error on target, SSM agent crashed, command timeout exceeded"
             release_token_refresh_lock
             return 1
         fi
     done
 
-    log_error "Timeout waiting for token refresh"
+    log_error "Timeout waiting for token refresh" "check=Verify control plane instance is responsive" "common_causes=Control plane overloaded, SSM agent slow to respond, network latency"
     release_token_refresh_lock
     return 1
 }
@@ -1524,29 +1524,29 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
         local has_error=false
 
         if [ "\$CLUSTER_ENDPOINT" = "PENDING_INITIALIZATION" ] || [ "\$CLUSTER_ENDPOINT" = "placeholder" ]; then
-            log_error "Cluster endpoint not initialized"
+            log_error "Cluster endpoint not initialized" "check=Verify first control plane completed initialization" "common_causes=First control plane still initializing, first control plane bootstrap failed"
             has_error=true
         fi
 
         if [ "\$CA_CERT_HASH" = "PENDING_INITIALIZATION" ] || [ "\$CA_CERT_HASH" = "placeholder" ]; then
-            log_error "CA certificate hash not initialized"
+            log_error "CA certificate hash not initialized" "check=Verify first control plane completed kubeadm init" "common_causes=First control plane still initializing, kubeadm init failed"
             has_error=true
         fi
 
         if [ "\$JOIN_TOKEN" = "PENDING_INITIALIZATION" ] || [ "\$JOIN_TOKEN" = "placeholder" ]; then
-            log_error "Join token not initialized"
+            log_error "Join token not initialized" "check=Verify first control plane generated join token" "common_causes=First control plane still initializing, SSM parameter update failed"
             has_error=true
         fi
 
         if [ "\$has_error" = "true" ]; then
-            log_error "SSM parameters contain uninitialized values - first control plane may not have completed initialization"
+            log_error "SSM parameters contain uninitialized values" "check=Wait for cluster initialization and check first control plane bootstrap logs" "common_causes=First control plane still initializing, first control plane failed before updating SSM"
             return 1
         fi
         return 0
     }
 
     if ! validate_join_params; then
-        log_error "Cannot join cluster - SSM parameters not ready"
+        log_error "Cannot join cluster - SSM parameters not ready" "check=Verify first control plane completed initialization at /var/log/cloud-init-output.log" "common_causes=First control plane must complete kubeadm init first, SSM parameter store not updated"
         exit 1
     fi
 
@@ -1670,20 +1670,20 @@ if [ "\$CLUSTER_INITIALIZED" = "true" ] && [ ! -f /etc/kubernetes/admin.conf ]; 
                         emit_metric "BootstrapDuration" "$BOOTSTRAP_DURATION" "$METRIC_MILLISECONDS" || true
                         emit_metric "BootstrapSuccess" "1" "$METRIC_COUNT" || true
                     else
-                        log_error "Join failed even with fresh token"
+                        log_error "Join failed even with fresh token" "check=Review kubeadm join output above" "common_causes=Network connectivity to API server, certificate-key expired, etcd quorum lost"
                         exit 1
                     fi
                 else
-                    log_error "Could not get a new token"
+                    log_error "Could not get a new token" "check=Verify control plane instance health" "common_causes=Token refresh returned empty, all control plane instances unhealthy"
                     exit 1
                 fi
             else
-                log_error "Token refresh failed"
+                log_error "Token refresh failed" "check=Verify SSM command execution on control plane" "common_causes=SSM agent offline on control plane, kubeadm token create failed"
                 exit 1
             fi
         fi
     else
-        log_error "Missing join information in SSM parameters"
+        log_error "Missing join information in SSM parameters" "check=Verify cluster initialization completed" "common_causes=SSM parameters not populated, first control plane failed"
         exit 1
     fi
 fi
