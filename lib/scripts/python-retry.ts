@@ -43,7 +43,8 @@ def retry_with_backoff(
     max_retries=3,
     base_delay=5,
     jitter_factor=0.3,
-    retriable_exceptions=(Exception,)
+    retriable_exceptions=(Exception,),
+    metrics_logger=None
 ):
     """
     Execute operation with exponential backoff retry logic and jitter.
@@ -55,6 +56,7 @@ def retry_with_backoff(
         base_delay: Base delay in seconds (exponential: base_delay * 2^attempt)
         jitter_factor: Random jitter factor (0.3 = up to 30% additional delay)
         retriable_exceptions: Tuple of exception types to catch and retry
+        metrics_logger: Optional MetricsLogger instance for emitting retry metrics
 
     Returns:
         Result of operation() on success, or None on failure
@@ -72,6 +74,12 @@ def retry_with_backoff(
             last_error = e
             is_retriable = getattr(e, 'is_retriable', True)
             logger.warning(f"{operation_name} attempt {attempt} failed: {str(e)}")
+
+            # Emit RetryAttempt metric on each retry (not first attempt)
+            if metrics_logger and attempt > 1:
+                metrics_logger.add_metric('RetryAttempt', 1, 'Count')
+                metrics_logger.add_dimension('Operation', operation_name)
+                metrics_logger.flush()
 
             if not is_retriable:
                 logger.error(f"{operation_name} error is not retriable, giving up")
@@ -93,6 +101,13 @@ def retry_with_backoff(
                 time.sleep(actual_delay)
 
     logger.error(f"All {max_retries} attempts failed for {operation_name}. Last error: {str(last_error)}")
+
+    # Emit RetryExhausted metric when all retries fail
+    if metrics_logger:
+        metrics_logger.add_metric('RetryExhausted', 1, 'Count')
+        metrics_logger.add_dimension('Operation', operation_name)
+        metrics_logger.flush()
+
     return None
 
 
@@ -147,7 +162,8 @@ def retry_with_circuit_breaker(
     max_retries=3,
     base_delay=5,
     jitter_factor=0.3,
-    retriable_exceptions=(Exception,)
+    retriable_exceptions=(Exception,),
+    metrics_logger=None
 ):
     """
     Execute operation with retry logic protected by circuit breaker.
@@ -163,6 +179,7 @@ def retry_with_circuit_breaker(
         base_delay: Base delay in seconds (exponential: base_delay * 2^attempt)
         jitter_factor: Random jitter factor (0.3 = up to 30% additional delay)
         retriable_exceptions: Tuple of exception types to catch and retry
+        metrics_logger: Optional MetricsLogger instance for emitting retry metrics
 
     Returns:
         Result of operation() on success, or None on failure
@@ -177,7 +194,8 @@ def retry_with_circuit_breaker(
         max_retries=max_retries,
         base_delay=base_delay,
         jitter_factor=jitter_factor,
-        retriable_exceptions=retriable_exceptions
+        retriable_exceptions=retriable_exceptions,
+        metrics_logger=metrics_logger
     )
 
     if result is not None:
