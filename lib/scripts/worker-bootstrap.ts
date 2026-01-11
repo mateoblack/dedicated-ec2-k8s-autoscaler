@@ -25,7 +25,9 @@ echo "Starting worker node bootstrap for cluster: ${clusterName}"
 MAX_RETRIES=5
 RETRY_DELAY=5
 
-# Track bootstrap state for cleanup
+# WHY BOOTSTRAP_STAGE: cleanup_on_failure uses this to determine what needs cleanup.
+# Worker bootstrap is simpler than control-plane, but stage tracking enables targeted
+# cleanup (e.g., only reset kubeadm if we got that far).
 BOOTSTRAP_STAGE="init"
 
 # Cleanup function for failed bootstrap
@@ -54,7 +56,8 @@ cleanup_on_failure() {
     exit \$exit_code
 }
 
-# Set trap for cleanup on error
+# WHY trap EXIT not ERR: EXIT fires on ALL exits including set -e failures and explicit
+# exit calls. ERR only catches simple command failures but misses other termination paths.
 trap cleanup_on_failure EXIT
 
 ${getBashRetryFunctions()}
@@ -244,7 +247,9 @@ fi
 # Get join token (might be freshly refreshed)
 JOIN_TOKEN=$(retry_command_output aws ssm get-parameter --name '/${clusterName}/cluster/join-token' --with-decryption --query 'Parameter.Value' --output text --region $REGION)
 
-# Validate SSM parameters are initialized (not placeholder values)
+# WHY validate_ssm_params: SSM parameters are created with placeholder values during CDK deploy.
+# The first control plane updates them with real values after kubeadm init. Workers starting
+# before control plane completes would fail confusingly without this early validation.
 validate_ssm_params() {
     local has_error=false
 

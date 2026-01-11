@@ -36,7 +36,9 @@ echo "Starting control plane bootstrap for cluster: ${clusterName}"
 MAX_RETRIES=5
 RETRY_DELAY=5
 
-# Track bootstrap state for cleanup
+# WHY BOOTSTRAP_STAGE: cleanup_on_failure needs to know how far bootstrap progressed.
+# Different stages require different cleanup: early failures only reset kubeadm, while
+# later failures may need to deregister from LB, remove etcd member, and release locks.
 BOOTSTRAP_STAGE="init"
 ETCD_REGISTERED=false
 LB_REGISTERED=false
@@ -73,8 +75,10 @@ cleanup_on_failure() {
             --query 'Items[0]' \
             --output json --region $REGION 2>/dev/null || echo "{}")
 
-        # Parse with Python and capture output using process substitution
-        # This avoids the subshell variable scope issue with pipe-into-block
+        # WHY process substitution < <(...): A pipe creates a subshell for the read command.
+        # Variables set in a subshell don't propagate to the parent shell, so cluster_id
+        # and member_id would be empty after the pipe. Process substitution keeps read
+        # in the parent shell while still feeding it Python's output.
         read cluster_id member_id < <(echo "\$member_info" | python3 -c "
 import sys, json
 try:
@@ -119,11 +123,15 @@ except:
     exit \$exit_code
 }
 
-# Set trap for cleanup on error
+# WHY trap EXIT not ERR: EXIT fires on ALL script terminations including set -e failures,
+# explicit exit calls, and normal completion. ERR only catches simple command failures
+# but misses exits from subshells or explicit exit statements.
 trap cleanup_on_failure EXIT
 
-# Function to release the cluster init lock explicitly
-# This ensures the lock is deleted from DynamoDB, not just the variable cleared
+# WHY release_init_lock function: Lock must be explicitly deleted from DynamoDB.
+# Clearing CLUSTER_LOCK_HELD only prevents cleanup_on_failure from releasing it;
+# the lock item still exists and blocks other nodes. Both success and failure paths
+# need to call this to ensure the lock is properly released.
 release_init_lock() {
     if [ "\$CLUSTER_LOCK_HELD" = "true" ]; then
         echo "Releasing cluster initialization lock from DynamoDB..."
