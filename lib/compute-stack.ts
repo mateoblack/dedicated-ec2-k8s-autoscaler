@@ -159,6 +159,17 @@ export class ComputeStack extends Construct {
       resources: ['*']
     }));
 
+    // Grant CloudWatch PutMetricData permission for metrics emission
+    etcdLifecycleRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'cloudwatch:namespace': `K8sCluster/${props.clusterName}`
+        }
+      }
+    }));
+
     // Lifecycle hook for etcd member cleanup
     new autoscaling.LifecycleHook(this, 'EtcdLifecycleHook', {
       autoScalingGroup: this.controlPlaneAutoScalingGroup,
@@ -239,6 +250,17 @@ export class ComputeStack extends Construct {
     // Grant read access to etcd member table for instance lookups
     props.etcdMemberTable.grantReadData(etcdBackupRole);
 
+    // Grant CloudWatch PutMetricData permission for metrics emission
+    etcdBackupRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'cloudwatch:namespace': `K8sCluster/${props.clusterName}`
+        }
+      }
+    }));
+
     // Scheduled rule to run backup every 6 hours
     new events.Rule(this, 'EtcdBackupSchedule', {
       ruleName: `${props.clusterName}-etcd-backup-schedule`,
@@ -305,6 +327,17 @@ export class ComputeStack extends Construct {
 
     // Grant read access to etcd member table for cluster state queries
     props.etcdMemberTable.grantReadData(clusterHealthRole);
+
+    // Grant CloudWatch PutMetricData permission for metrics emission
+    clusterHealthRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'cloudwatch:namespace': `K8sCluster/${props.clusterName}`
+        }
+      }
+    }));
 
     // Scheduled rule to check cluster health every 5 minutes
     new events.Rule(this, 'ClusterHealthSchedule', {

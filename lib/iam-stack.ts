@@ -249,6 +249,19 @@ export class IamStack extends Construct {
         `arn:aws:logs:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:log-group:/aws/kubernetes/${clusterName}/*`
       ]
     }));
+
+    // PutMetricData requires resource: * (doesn't support resource-level permissions)
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        "cloudwatch:PutMetricData"
+      ],
+      resources: ["*"],
+      conditions: {
+        StringEquals: {
+          "cloudwatch:namespace": `K8sCluster/${clusterName}`
+        }
+      }
+    }));
   }
 
   private addDynamoDBPermissions(role: iam.Role, clusterName: string, isControlPlane: boolean) {
