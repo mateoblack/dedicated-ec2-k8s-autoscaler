@@ -457,7 +457,11 @@ KUBEADMEOF
     retry_command "aws ssm put-parameter --name '/${clusterName}/cluster/restore-mode' --value 'false' --type 'String' --overwrite --region $REGION"
 
     # Register etcd member
-    register_etcd_member || echo "WARNING: Failed to register etcd member"
+    if register_etcd_member; then
+        ETCD_REGISTERED=true
+    else
+        echo "WARNING: Failed to register etcd member, lifecycle cleanup may not work"
+    fi
 
     # Install CNI
     echo "Installing Cilium CNI plugin..."
