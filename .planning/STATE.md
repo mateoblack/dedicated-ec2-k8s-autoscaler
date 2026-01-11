@@ -5,25 +5,25 @@
 See: .planning/PROJECT.md (updated 2026-01-11)
 
 **Core value:** Reliable cluster initialization and etcd lifecycle management
-**Current focus:** Phase 8 — Documentation
+**Current focus:** v1.1 Observability & Reliability
 
 ## Current Position
 
-Phase: 8 of 8 (Documentation)
-Plan: 1 of 1 in current phase
-Status: Milestone complete
-Last activity: 2026-01-11 — Completed 08-01-PLAN.md (bootstrap documentation)
+Phase: 9 of 13 (Structured Logging)
+Plan: 09-01 (of 4)
+Status: Ready to execute
+Last activity: 2026-01-11 — Phase 9 planned (4 plans)
 
-Progress: ██████████ 100%
+Progress: ░░░░░░░░░░ 0%
 
 ## Performance Metrics
 
-**Velocity:**
+**Velocity (from v1.0):**
 - Total plans completed: 12
 - Average duration: 4.7 min
 - Total execution time: 56 min
 
-**By Phase:**
+**By Phase (v1.0):**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
@@ -36,37 +36,37 @@ Progress: ██████████ 100%
 | 7. Script Linting | 1 | 10 min | 10 min |
 | 8. Documentation | 1 | 4 min | 4 min |
 
-**Recent Trend:**
-- Last 5 plans: 4, 3, 4, 10, 4 min
-- Trend: Consistent execution times
-
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-- Bootstrap functions take stack parameter for region access (01-02)
-- Shared bash modules export functions returning script strings for interpolation (02-01)
-- Constants remain in calling scripts before interpolation for customization (02-01)
-- Shared Python modules follow same pattern: export function returning Python code string (02-02)
-- etcd-backup-lambda changed from linear to exponential backoff for consistency (02-02)
-- Use process substitution `< <(cmd)` for parent shell variable reads (03-01)
-- Use if/then pattern consistently for all register_etcd_member calls (04-01)
-- Use $* for display (echo) and "$@" for execution in bash (05-01)
-- Programmatic shellcheck via Jest tests with documented exclusions (07-01)
+All decisions from v1.0 milestone have been recorded with outcomes.
 
 ### Deferred Issues
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-None yet.
+None.
+
+### Roadmap Evolution
+
+- Milestone v1.1 created: Observability & Reliability, 5 phases (Phase 9-13)
 
 ## Session Continuity
 
 Last session: 2026-01-11
-Stopped at: Completed Phase 8 — Milestone 100% complete
+Stopped at: Milestone v1.1 initialization
 Resume file: None
+
+## v1.0 Summary
+
+**v1.0 Code Audit shipped (2026-01-11):**
+- 8 phases, 12 plans completed
+- 35 files modified, +8,252 / -3,332 lines
+- 1,048 tests (144 new)
+- Key wins: 90% reduction in compute-stack.ts, security fix (eval removal), 2 bug fixes (variable scoping, race condition)
+
+See `.planning/MILESTONES.md` for full details.
