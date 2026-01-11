@@ -28,9 +28,7 @@ describe('Lambda Code Generators', () => {
         expect(code).toContain('import json');
         expect(code).toContain('import boto3');
         expect(code).toContain('import os');
-        expect(code).toContain('import logging');
         expect(code).toContain('import time');
-        expect(code).toContain('from datetime import datetime');
       });
 
       test('contains AWS client initializations', () => {
@@ -40,9 +38,9 @@ describe('Lambda Code Generators', () => {
         expect(code).toContain("ssm = boto3.client('ssm')");
       });
 
-      test('configures logging', () => {
-        expect(code).toContain('logger = logging.getLogger()');
-        expect(code).toContain('logger.setLevel(logging.INFO)');
+      test('configures structured logging', () => {
+        expect(code).toContain('getPythonLoggingSetup()');
+        expect(code).toContain('logger = setup_logging(context)');
       });
     });
 

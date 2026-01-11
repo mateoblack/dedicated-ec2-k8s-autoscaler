@@ -4,18 +4,16 @@
  */
 
 import { getPythonRetryUtils } from './python-retry';
+import { getPythonLoggingSetup } from './python-logging';
 
 export function createEtcdLifecycleLambdaCode(clusterName: string): string {
   return `
 import json
 import boto3
 import os
-import logging
 import time
-from datetime import datetime
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+\${getPythonLoggingSetup()}
 
 dynamodb = boto3.resource('dynamodb')
 ec2 = boto3.client('ec2')
@@ -54,10 +52,11 @@ def handler(event, context):
     Ensures etcd member is safely removed before instance termination.
     If removal fails, we ABANDON the termination to protect cluster quorum.
     """
+    logger = setup_logging(context)
     lifecycle_params = None
 
     try:
-        logger.info(f"Received event: {json.dumps(event)}")
+        logger.info("Received lifecycle event", extra={'event': event})
 
         # Parse lifecycle hook event
         detail = event.get('detail', {})
@@ -73,12 +72,12 @@ def handler(event, context):
             return {'statusCode': 400, 'body': 'No instance ID'}
 
         instance_id = lifecycle_params['instance_id']
-        logger.info(f"Processing termination for instance: {instance_id}")
+        logger.info("Processing instance termination", extra={'instance_id': instance_id})
 
         # Get instance details
         instance_info = get_instance_info(instance_id)
         if not instance_info:
-            logger.warning(f"Instance {instance_id} not found - may already be terminated")
+            logger.warning("Instance not found - may already be terminated", extra={'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
             return {'statusCode': 200, 'body': 'Instance not found, continuing'}
 
@@ -88,13 +87,13 @@ def handler(event, context):
         member_info = lookup_etcd_member(instance_id)
 
         if not member_info:
-            logger.info(f"No etcd member record for instance {instance_id} - not a control plane node or already removed")
+            logger.info("No etcd member record - not a control plane node or already removed", extra={'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
             return {'statusCode': 200, 'body': 'Not an etcd member, continuing'}
 
         etcd_member_id = member_info.get('EtcdMemberId')
         if not etcd_member_id:
-            logger.warning(f"Instance {instance_id} has member record but no EtcdMemberId")
+            logger.warning("Instance has member record but no EtcdMemberId", extra={'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
             return {'statusCode': 200, 'body': 'No etcd member ID, continuing'}
 
@@ -105,10 +104,10 @@ def handler(event, context):
         node_name = member_info.get('Hostname') or private_ip
 
         # Step 1: Drain the node (cordon + evict pods)
-        logger.info(f"Draining node {node_name} before removal...")
+        logger.info("Draining node before removal", extra={'node_name': node_name, 'instance_id': instance_id})
         drain_success = drain_node_with_retry(node_name, instance_id)
         if not drain_success:
-            logger.warning(f"Node drain failed for {node_name}, continuing with etcd removal anyway")
+            logger.warning("Node drain failed, continuing with etcd removal", extra={'node_name': node_name})
             # We continue with etcd removal even if drain fails - better to remove the node
             # than leave it in a partially drained state
 
@@ -122,24 +121,24 @@ def handler(event, context):
         if removal_success:
             # Update DynamoDB record
             update_member_status(member_info, 'REMOVED', context.aws_request_id)
-            logger.info(f"Successfully removed etcd member {etcd_member_id}")
+            logger.info("Successfully removed etcd member", extra={'etcd_member_id': etcd_member_id, 'instance_id': instance_id})
             complete_lifecycle_action(lifecycle_params, 'CONTINUE')
             return {'statusCode': 200, 'body': 'Success'}
         else:
             # Removal failed after all retries - ABANDON to protect cluster
-            logger.error(f"Failed to remove etcd member {etcd_member_id} after {MAX_RETRIES} attempts")
+            logger.error("Failed to remove etcd member after retries", extra={'etcd_member_id': etcd_member_id, 'max_retries': MAX_RETRIES})
             update_member_status(member_info, 'REMOVAL_FAILED', context.aws_request_id)
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
             return {'statusCode': 500, 'body': 'etcd removal failed, abandoning termination'}
 
     except QuorumRiskError as e:
-        logger.error(f"Quorum risk detected: {str(e)}")
+        logger.error("Quorum risk detected", extra={'error': str(e), 'error_type': type(e).__name__})
         if lifecycle_params:
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
         return {'statusCode': 409, 'body': f'Quorum risk: {str(e)}'}
 
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        logger.error("Unexpected error", extra={'error': str(e), 'error_type': type(e).__name__}, exc_info=True)
         # On unexpected errors, ABANDON to be safe
         if lifecycle_params:
             complete_lifecycle_action(lifecycle_params, 'ABANDON')
@@ -193,7 +192,7 @@ def update_member_status(member_info, status, request_id):
             }
         )
     except Exception as e:
-        logger.error(f"Failed to update member status: {str(e)}")
+        logger.error("Failed to update member status", extra={'error': str(e), 'member_id': member_info.get('MemberId')})
         # Don't raise - status update failure shouldn't block the operation
 
 
@@ -208,7 +207,7 @@ def check_quorum_safety(terminating_instance_id):
     healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
     healthy_count = len(healthy_instances)
 
-    logger.info(f"Healthy control plane instances (excluding terminating): {healthy_count}")
+    logger.info("Healthy control plane instances count", extra={'healthy_count': healthy_count, 'terminating_instance_id': terminating_instance_id})
 
     if healthy_count < MIN_HEALTHY_NODES_FOR_REMOVAL:
         raise QuorumRiskError(
@@ -234,7 +233,7 @@ def drain_node(node_name, terminating_instance_id):
     Drain a Kubernetes node using kubectl via SSM.
     This cordons the node and evicts all pods gracefully.
     """
-    logger.info(f"Draining node {node_name}")
+    logger.info("Starting node drain", extra={'node_name': node_name})
 
     # Find healthy control plane instance to execute kubectl on
     healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
@@ -243,7 +242,7 @@ def drain_node(node_name, terminating_instance_id):
         raise NodeDrainError("No healthy control plane instances available for drain", is_retriable=True)
 
     target_instance = healthy_instances[0]
-    logger.info(f"Executing kubectl drain on instance {target_instance}")
+    logger.info("Executing kubectl drain via SSM", extra={'target_instance': target_instance, 'node_name': node_name})
 
     # Execute kubectl drain via SSM
     # --ignore-daemonsets: DaemonSets can't be evicted
@@ -293,7 +292,7 @@ def drain_node(node_name, terminating_instance_id):
             TimeoutSeconds=DRAIN_TIMEOUT
         )
         command_id = response['Command']['CommandId']
-        logger.info(f"SSM drain command sent: {command_id}")
+        logger.info("SSM drain command sent", extra={'command_id': command_id, 'target_instance': target_instance})
     except Exception as e:
         raise NodeDrainError(f"Failed to send SSM drain command: {str(e)}", is_retriable=True)
 
@@ -317,14 +316,14 @@ def wait_for_drain_command(command_id, instance_id):
                 InstanceId=instance_id
             )
         except ssm.exceptions.InvocationDoesNotExist:
-            logger.info("Drain command invocation not ready yet...")
+            logger.info("Drain command invocation not ready yet", extra={'command_id': command_id})
             continue
 
         status = result['Status']
 
         if status == 'Success':
             stdout = result.get('StandardOutputContent', '')
-            logger.info(f"Drain command succeeded: {stdout}")
+            logger.info("Drain command succeeded", extra={'command_id': command_id, 'output': stdout[:500] if stdout else ''})
             return
 
         elif status == 'InProgress' or status == 'Pending':
@@ -337,7 +336,7 @@ def wait_for_drain_command(command_id, instance_id):
 
             # Check if node was not found (not an error)
             if 'not found' in error_msg.lower() or 'not found' in stdout.lower():
-                logger.info("Node not found in cluster, treating as success")
+                logger.info("Node not found in cluster, treating as success", extra={'command_id': command_id})
                 return
 
             raise NodeDrainError(
@@ -362,7 +361,7 @@ def remove_etcd_member_with_retry(member_id, private_ip, terminating_instance_id
 
 def remove_etcd_member(member_id, private_ip, terminating_instance_id):
     """Remove member from etcd cluster using etcdctl via SSM"""
-    logger.info(f"Removing etcd member {member_id} with IP {private_ip}")
+    logger.info("Removing etcd member", extra={'member_id': member_id, 'private_ip': private_ip})
 
     # Find healthy control plane instance to execute etcdctl on
     healthy_instances = get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)
@@ -371,7 +370,7 @@ def remove_etcd_member(member_id, private_ip, terminating_instance_id):
         raise EtcdRemovalError("No healthy control plane instances available", is_retriable=True)
 
     target_instance = healthy_instances[0]
-    logger.info(f"Executing etcdctl on instance {target_instance}")
+    logger.info("Executing etcdctl via SSM", extra={'target_instance': target_instance, 'member_id': member_id})
 
     # Execute etcdctl member remove via SSM
     command = f\"\"\"
@@ -407,7 +406,7 @@ def remove_etcd_member(member_id, private_ip, terminating_instance_id):
             TimeoutSeconds=SSM_COMMAND_TIMEOUT
         )
         command_id = response['Command']['CommandId']
-        logger.info(f"SSM command sent: {command_id}")
+        logger.info("SSM command sent", extra={'command_id': command_id, 'target_instance': target_instance})
     except Exception as e:
         raise EtcdRemovalError(f"Failed to send SSM command: {str(e)}", is_retriable=True)
 
@@ -431,14 +430,14 @@ def wait_for_ssm_command(command_id, instance_id):
                 InstanceId=instance_id
             )
         except ssm.exceptions.InvocationDoesNotExist:
-            logger.info("Command invocation not ready yet...")
+            logger.info("Command invocation not ready yet", extra={'command_id': command_id})
             continue
 
         status = result['Status']
 
         if status == 'Success':
             stdout = result.get('StandardOutputContent', '')
-            logger.info(f"Command succeeded: {stdout}")
+            logger.info("Command succeeded", extra={'command_id': command_id, 'output': stdout[:500] if stdout else ''})
             return
 
         elif status == 'InProgress' or status == 'Pending':
@@ -451,7 +450,7 @@ def wait_for_ssm_command(command_id, instance_id):
 
             # Check if member was already removed (not an error)
             if 'not found' in error_msg.lower() or 'already be removed' in stdout.lower():
-                logger.info("Member already removed, treating as success")
+                logger.info("Member already removed, treating as success", extra={'command_id': command_id})
                 return
 
             raise EtcdRemovalError(
@@ -495,11 +494,11 @@ def get_healthy_control_plane_instances(exclude_instance=None):
                 if instance['State']['Name'] == 'running':
                     healthy_instances.append(instance['InstanceId'])
 
-        logger.info(f"Found {len(healthy_instances)} healthy control plane instances")
+        logger.info("Found healthy control plane instances", extra={'healthy_count': len(healthy_instances)})
         return healthy_instances
 
     except Exception as e:
-        logger.error(f"Error finding healthy instances: {str(e)}")
+        logger.error("Error finding healthy instances", extra={'error': str(e)})
         return []
 
 
@@ -519,10 +518,10 @@ def complete_lifecycle_action(params, result):
             InstanceId=params['instance_id'],
             LifecycleActionResult=result
         )
-        logger.info(f"Completed lifecycle action for {params['instance_id']} with result {result}")
+        logger.info("Completed lifecycle action", extra={'instance_id': params['instance_id'], 'result': result})
     except Exception as e:
         # This is critical - if we can't complete the action, the instance hangs
-        logger.error(f"CRITICAL: Failed to complete lifecycle action: {str(e)}")
+        logger.error("CRITICAL: Failed to complete lifecycle action", extra={'error': str(e), 'instance_id': params['instance_id']})
 
         # Try one more time with just instance ID (without token)
         try:
@@ -532,9 +531,9 @@ def complete_lifecycle_action(params, result):
                 InstanceId=params['instance_id'],
                 LifecycleActionResult=result
             )
-            logger.info(f"Completed lifecycle action on retry (without token)")
+            logger.info("Completed lifecycle action on retry (without token)", extra={'instance_id': params['instance_id']})
         except Exception as e2:
-            logger.error(f"CRITICAL: Retry also failed: {str(e2)}")
+            logger.error("CRITICAL: Retry also failed", extra={'error': str(e2), 'instance_id': params['instance_id']})
             # At this point, the instance will time out based on the lifecycle hook timeout
 `;
 }

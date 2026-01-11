@@ -243,7 +243,7 @@ describe('Before Terminate Lifecycle Hook', () => {
     });
 
     test('logs target instance for drain execution', () => {
-      expect(lifecycleLambdaCode).toContain('Executing kubectl drain on instance');
+      expect(lifecycleLambdaCode).toContain('Executing kubectl drain via SSM');
     });
   });
 
@@ -419,11 +419,11 @@ describe('Before Terminate Lifecycle Hook', () => {
 
   describe('Logging', () => {
     test('logs received event', () => {
-      expect(lifecycleLambdaCode).toContain('Received event');
+      expect(lifecycleLambdaCode).toContain('Received lifecycle event');
     });
 
     test('logs processing termination', () => {
-      expect(lifecycleLambdaCode).toContain('Processing termination for instance');
+      expect(lifecycleLambdaCode).toContain('Processing instance termination');
     });
 
     test('logs instance not found', () => {
