@@ -141,7 +141,7 @@ retry_command_timeout() {
         if command -v log_info >/dev/null 2>&1; then
             log_info "Executing command with timeout" "attempt=$attempt" "max_attempts=$MAX_RETRIES" "timeout_seconds=$timeout_seconds" "command=$*"
         else
-            echo "Executing (attempt $attempt/$MAX_RETRIES, timeout ${timeout_seconds}s): $*"
+            echo "Executing (attempt $attempt/$MAX_RETRIES, timeout \${timeout_seconds}s): $*"
         fi
 
         local exit_code=0
@@ -183,7 +183,7 @@ retry_command_timeout() {
     if command -v log_error >/dev/null 2>&1; then
         log_error "Command failed after all retries" "attempts=$MAX_RETRIES" "timeout_seconds=$timeout_seconds" "command=$*"
     else
-        echo "ERROR: Command failed after $MAX_RETRIES attempts (timeout=${timeout_seconds}s): $*"
+        echo "ERROR: Command failed after $MAX_RETRIES attempts (timeout=\${timeout_seconds}s): $*"
     fi
     return 1
 }
