@@ -30,17 +30,16 @@ export function getBashRetryFunctions(): string {
 # Note: MAX_RETRIES and RETRY_DELAY should be defined before this point
 
 # Retry helper function with exponential backoff
-# Usage: retry_command <command>
+# Usage: retry_command <cmd> [args...]
 # Returns: 0 on success, 1 on failure after all retries
 retry_command() {
-    local cmd="$1"
     local attempt=1
     local delay=$RETRY_DELAY
 
     while [ $attempt -le $MAX_RETRIES ]; do
-        echo "Executing (attempt $attempt/$MAX_RETRIES): $cmd"
+        echo "Executing (attempt $attempt/$MAX_RETRIES): $*"
 
-        if eval "$cmd"; then
+        if "$@"; then
             return 0
         fi
 
@@ -53,20 +52,19 @@ retry_command() {
         attempt=$((attempt + 1))
     done
 
-    echo "ERROR: Command failed after $MAX_RETRIES attempts: $cmd"
+    echo "ERROR: Command failed after $MAX_RETRIES attempts: $*"
     return 1
 }
 
 # Retry helper that captures output
-# Usage: result=$(retry_command_output <command>)
+# Usage: result=$(retry_command_output <cmd> [args...])
 retry_command_output() {
-    local cmd="$1"
     local attempt=1
     local delay=$RETRY_DELAY
     local output=""
 
     while [ $attempt -le $MAX_RETRIES ]; do
-        output=$(eval "$cmd" 2>/dev/null)
+        output=$("$@" 2>/dev/null)
         if [ $? -eq 0 ] && [ -n "$output" ]; then
             echo "$output"
             return 0
