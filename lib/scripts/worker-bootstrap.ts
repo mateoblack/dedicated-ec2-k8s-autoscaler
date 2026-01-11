@@ -92,7 +92,7 @@ REGION=${region}
 
 # Verify we got instance metadata
 if [ -z "$INSTANCE_ID" ] || [ -z "$PRIVATE_IP" ]; then
-    log_error "Failed to get instance metadata"
+    log_error "Failed to get instance metadata" "check=Verify IMDS is accessible at 169.254.169.254" "common_causes=IMDSv2 not configured correctly, instance IAM role missing, IMDS endpoint blocked by firewall"
     exit 1
 fi
 
@@ -111,7 +111,7 @@ for i in {1..60}; do
 done
 
 if [ "$CLUSTER_INITIALIZED" != "true" ]; then
-    log_error "Timeout waiting for cluster initialization"
+    log_error "Timeout waiting for cluster initialization" "check=Check control plane bootstrap logs at /var/log/cloud-init-output.log" "common_causes=Cluster initialization takes 5-10 minutes, control plane bootstrap may have failed"
     exit 1
 fi
 
@@ -129,7 +129,7 @@ request_new_token() {
         --output text --region $REGION 2>/dev/null)
 
     if [ -z "$CONTROL_PLANE_INSTANCE" ] || [ "$CONTROL_PLANE_INSTANCE" = "None" ]; then
-        log_error "No healthy control plane instance found"
+        log_error "No healthy control plane instance found" "check=Verify control plane ASG has running instances in InService state" "common_causes=All control plane instances unhealthy, ASG scaling down, instance filter mismatch"
         return 1
     fi
 
@@ -160,7 +160,7 @@ fi
         --output text --region "$REGION" 2>/dev/null)
 
     if [ -z "$command_id" ] || [ "$command_id" = "None" ]; then
-        log_error "Failed to send SSM command"
+        log_error "Failed to send SSM command" "check=Verify SSM agent is running on target instance" "common_causes=IAM role missing ssm:SendCommand permission, target instance SSM agent offline, instance not registered with SSM"
         return 1
     fi
 
@@ -190,16 +190,16 @@ fi
                 log_info "Token refresh successful"
                 return 0
             else
-                log_error "Token refresh command did not succeed"
+                log_error "Token refresh command did not succeed" "check=Review SSM command output in AWS console" "common_causes=kubeadm token create failed on control plane, control plane API server unhealthy, kubeconfig missing"
                 return 1
             fi
         elif [ "$status" = "Failed" ] || [ "$status" = "Cancelled" ] || [ "$status" = "TimedOut" ]; then
-            log_error "SSM command failed" "status=$status"
+            log_error "SSM command failed" "status=$status" "check=Review SSM Run Command history in AWS console" "common_causes=Script execution error on target, SSM agent crashed, command timeout exceeded"
             return 1
         fi
     done
 
-    log_error "Timeout waiting for token refresh"
+    log_error "Timeout waiting for token refresh" "check=Verify control plane instance is responsive" "common_causes=Control plane overloaded, kubeadm token create taking too long"
     return 1
 }
 
@@ -265,22 +265,22 @@ validate_ssm_params() {
     local has_error=false
 
     if [ "$CLUSTER_ENDPOINT" = "PENDING_INITIALIZATION" ] || [ "$CLUSTER_ENDPOINT" = "placeholder" ]; then
-        log_error "Cluster endpoint not initialized - cluster may not be ready"
+        log_error "Cluster endpoint not initialized - cluster may not be ready" "check=Wait for control plane initialization and check SSM parameter store" "common_causes=First control plane still initializing, kubeadm init not complete"
         has_error=true
     fi
 
     if [ "$CA_CERT_HASH" = "PENDING_INITIALIZATION" ] || [ "$CA_CERT_HASH" = "placeholder" ]; then
-        log_error "CA certificate hash not initialized - cluster may not be ready"
+        log_error "CA certificate hash not initialized" "check=Verify control plane completed kubeadm init" "common_causes=Control plane must complete initialization first, SSM parameter not updated"
         has_error=true
     fi
 
     if [ "$JOIN_TOKEN" = "PENDING_INITIALIZATION" ] || [ "$JOIN_TOKEN" = "placeholder" ]; then
-        log_error "Join token not initialized - cluster may not be ready"
+        log_error "Join token not initialized" "check=Verify control plane generated join token" "common_causes=Control plane must generate join token first, SSM parameter not updated"
         has_error=true
     fi
 
     if [ "$has_error" = "true" ]; then
-        log_error "SSM parameters contain uninitialized values - control plane may not have completed initialization"
+        log_error "SSM parameters contain uninitialized values" "check=Check /var/log/cloud-init-output.log on first control plane" "common_causes=First control plane may still be initializing, control plane bootstrap failed before updating SSM"
         exit 1
     fi
 }
@@ -394,20 +394,20 @@ if [ -n "$CLUSTER_ENDPOINT" ] && [ -n "$JOIN_TOKEN" ] && [ -n "$CA_CERT_HASH" ];
                     log_info "Successfully joined cluster with fresh token"
                     BOOTSTRAP_STAGE="complete"
                 else
-                    log_error "Join failed even with fresh token"
+                    log_error "Join failed even with fresh token" "check=Review kubeadm join output above" "common_causes=Network connectivity to API server endpoint, token still invalid, CA cert hash mismatch"
                     exit 1
                 fi
             else
-                log_error "Could not get a different token"
+                log_error "Could not get a different token" "check=Verify control plane health" "common_causes=Token refresh returned same token, control plane may be unhealthy"
                 exit 1
             fi
         else
-            log_error "Token refresh failed"
+            log_error "Token refresh failed" "check=Verify SSM command execution on control plane" "common_causes=SSM agent offline on control plane, kubeadm token create failed"
             exit 1
         fi
     fi
 else
-    log_error "Missing required join parameters from SSM"
+    log_error "Missing required join parameters from SSM" "check=Verify cluster initialization completed" "common_causes=Cluster may not be initialized, SSM parameters not populated"
     exit 1
 fi
 
