@@ -121,6 +121,49 @@ describe('Lambda Code Generators', () => {
         expect(code).toContain('def get_healthy_control_plane_instances(exclude_instance=None):');
       });
     });
+
+    describe('quorum safety critical path', () => {
+      test('checks healthy count against minimum threshold', () => {
+        expect(code).toContain('healthy_count < MIN_HEALTHY_NODES_FOR_REMOVAL');
+      });
+
+      test('raises QuorumRiskError when insufficient healthy nodes', () => {
+        expect(code).toContain('raise QuorumRiskError(');
+      });
+
+      test('queries control plane ASG excluding terminating instance', () => {
+        expect(code).toContain('get_healthy_control_plane_instances(exclude_instance=terminating_instance_id)');
+      });
+    });
+
+    describe('lifecycle action completion critical path', () => {
+      test('completes lifecycle action with CONTINUE for success', () => {
+        expect(code).toContain("complete_lifecycle_action(lifecycle_params, 'CONTINUE')");
+      });
+
+      test('completes lifecycle action with ABANDON for failure', () => {
+        expect(code).toContain("complete_lifecycle_action(lifecycle_params, 'ABANDON')");
+      });
+
+      test('has fallback retry path without token', () => {
+        // Critical: If completion fails, retry without token to prevent instance hang
+        expect(code).toContain('Completed lifecycle action on retry (without token)');
+      });
+    });
+
+    describe('node drain timeout handling critical path', () => {
+      test('polls SSM command with max_wait timeout', () => {
+        expect(code).toContain('while elapsed < max_wait:');
+      });
+
+      test('handles InProgress and Pending status during polling', () => {
+        expect(code).toContain("status == 'InProgress' or status == 'Pending'");
+      });
+
+      test('handles node not found as success (already removed)', () => {
+        expect(code).toContain("'not found' in error_msg.lower()");
+      });
+    });
   });
 
   describe('createEtcdBackupLambdaCode', () => {

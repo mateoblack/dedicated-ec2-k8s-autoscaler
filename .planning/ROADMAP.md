@@ -67,20 +67,21 @@ Plans:
 **Goal**: Address naming, patterns, and formatting inconsistencies identified in audit
 **Depends on**: Phase 14
 **Research**: Unlikely (internal refactoring, established patterns)
-**Plans**: TBD
+**Plans**: 1
 
 Plans:
-- [ ] 15-01: Verify consistency and update CONCERNS.md (2 tasks)
+- [x] 15-01: Verify consistency and update CONCERNS.md (2 tasks) — completed 2026-01-11
 
 #### Phase 16: Test Coverage Improvements
 
-**Goal**: Identify areas with missing or weak test coverage and add comprehensive tests
+**Goal**: Add pattern-based tests for critical Lambda and bootstrap script logic paths
 **Depends on**: Phase 15
 **Research**: Unlikely (internal testing, established patterns)
-**Plans**: TBD
+**Plans**: 2
 
 Plans:
-- [ ] 16-01: TBD (run /gsd:plan-phase 16 to break down)
+- [ ] 16-01: Lambda critical path tests (3 tasks)
+- [ ] 16-02: Bootstrap critical path tests and barrel file fix (3 tasks)
 
 ## Progress
 
@@ -89,5 +90,5 @@ See [MILESTONES.md](MILESTONES.md) for completed milestone history.
 | Phase | Milestone | Plans | Status | Completed |
 |-------|-----------|-------|--------|-----------|
 | 14. Test Failures & Consistency Audit | v1.2 | 2/2 | Complete | 2026-01-11 |
-| 15. Code Consistency Cleanup | v1.2 | 0/? | Not started | - |
-| 16. Test Coverage Improvements | v1.2 | 0/? | Not started | - |
+| 15. Code Consistency Cleanup | v1.2 | 1/1 | Complete | 2026-01-11 |
+| 16. Test Coverage Improvements | v1.2 | 0/2 | Planned | - |
