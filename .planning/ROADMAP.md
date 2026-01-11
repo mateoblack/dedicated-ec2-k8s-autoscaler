@@ -100,10 +100,11 @@ Plans:
 **Goal**: Correlation IDs linking related operations across Lambda invocations and script execution
 **Depends on**: Phase 12
 **Research**: Complete (correlation ID patterns)
-**Plans**: ?
+**Plans**: 3
 
 Plans:
 - [x] 13-01: Correlation ID infrastructure
+- [x] 13-02: Lambda SSM trace ID propagation
 
 ## Progress
 
@@ -124,4 +125,4 @@ Phases execute in numeric order: 1 → 2 → ... → 8 → 9 → 10 → 11 → 1
 | 10. CloudWatch Metrics | v1.1 | 4/4 | Complete | 2026-01-11 |
 | 11. Error Messages | v1.1 | 2/2 | Complete | 2026-01-11 |
 | 12. Graceful Recovery | v1.1 | 5/5 | Complete | 2026-01-11 |
-| 13. Tracing | v1.1 | 1/? | In progress | - |
+| 13. Tracing | v1.1 | 2/3 | In progress | - |
